@@ -13,7 +13,8 @@ import ChatPanel from './components/ChatPanel.vue'
 const tab = ref('learn')
 const showModel = ref(false)
 const modelInfo = ref({ configured: false, current: '', models: [] })
-const chatContext = ref(null)   // null = closed; {source_type, source_id, title}
+const chatContext = ref(null)   // null = 通用答疑；{source_type, source_id, title} = 带上下文
+const chatOpen = ref(false)
 const health = ref(null)
 const pool = ref(null)
 const me = ref(null)
@@ -66,13 +67,19 @@ async function onModelChanged(model) {
 
 async function logout() {
   await api('/api/auth/logout', { method: 'POST' }).catch(() => {})
+  chatOpen.value = false
   showAuth.value = true
   await loadMe()
 }
 
+function openChat(ctx = null) {
+  chatContext.value = ctx
+  chatOpen.value = true
+}
+
 provide('onChanged', refreshHeader)
 provide('goTab', goTab)
-provide('openChat', (ctx = null) => { chatContext.value = ctx })
+provide('openChat', openChat)
 
 onMounted(async () => {
   await loadMe()
@@ -108,9 +115,9 @@ onMounted(async () => {
     <AuthPanel v-if="showAuth || !me" @done="onAuthDone" @cancel="showAuth = false" />
 
     <ModelPanel v-if="showModel" :info="modelInfo" @close="showModel = false" @changed="onModelChanged" />
-    <ChatPanel v-if="chatContext" :context="chatContext" @close="chatContext = null" />
+    <ChatPanel v-if="chatOpen" :context="chatContext" @close="chatOpen = false" />
 
-    <template v-else>
+    <template v-if="me && !showAuth">
       <div class="notice" v-if="me.local">
         当前是<strong>本机模式</strong>：进度存在本机账号里。点「切换账号」注册，已有进度会自动归到你名下；注册后各账号数据互相隔离。「词库管理」在这里直接可用，无需管理员账号。
       </div>
