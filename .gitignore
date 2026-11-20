@@ -1,0 +1,27 @@
+# ---- secrets (NEVER commit) ----
+.env
+**/.env
+!.env.example
+
+# ---- Python ----
+backend/.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- Node / Vite ----
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ---- exported / downloaded word bank data ----
+data/ecdict*.csv
+data/.ecdict-parts/
+data/*.sqlite
+data/*.db
+data/*.zip
+
+# ---- OS / editor ----
+Thumbs.db
+.DS_Store
+.vscode/
