@@ -40,6 +40,16 @@ async function publishNow() {
   finally { busy.value = false }
 }
 
+function refreshSummary() {
+  if (!data.value || data.value.status !== 'published') return
+  const all = data.value.articles.flatMap(a => a.questions)
+  const scores = all.filter(q => q.score != null && q.scored).map(q => Number(q.score))
+  data.value.summary.answered = all.filter(q => q.answered).length
+  data.value.summary.correct = all.filter(q => q.correct === 1).length
+  data.value.summary.score = Math.round(scores.reduce((s, n) => s + n, 0) * 100) / 100
+  data.value.summary.scored = scores.length > 0
+}
+
 async function submit(q) {
   if (busy.value) return
   const value = q.ai_graded ? (subjective[q.id] || '') : (selected[q.id] || '')
@@ -47,11 +57,24 @@ async function submit(q) {
   busy.value = true
   error.value = ''
   try {
-    await api('/api/reading/answer', {
+    const r = await api('/api/reading/answer', {
       method: 'POST',
       body: JSON.stringify({ question_id: q.id, week_key: weekKey.value, value })
     })
-    await loadReading()
+    // Patch just this question. A full loadReading() briefly shows the
+    // "正在读取" placeholder, collapses the page and throws the reader back
+    // to the top — exactly what we want to avoid here.
+    q.answered = true
+    q.user_answer = value
+    q.correct = r.correct ? 1 : 0
+    q.score = r.score
+    q.scored = r.late ? 0 : 1
+    q.correct_option = q.options ? (r.standard_answer || null) : null
+    q.standard_answer = q.ai_graded ? (r.standard_answer || null) : null
+    q.ai_result = q.ai_graded && r.reason
+      ? JSON.stringify({ reason: r.reason }) : (r.reason || null)
+    data.value.late = data.value.late || !!r.late
+    refreshSummary()
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
