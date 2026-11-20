@@ -9,19 +9,30 @@ Design rules (mirror docs/design-decisions.md):
     it to a selected passage: translation (ZH<->EN), word lookup, grammar,
     writing polish and general English questions are all supported. When a
     passage/question is selected, its frozen snapshot is ground truth.
+  - It can also GENERATE kaoyan-style practice (cloze / reading / translation /
+    writing) using today's learned words, fetched server-side on demand, and
+    grade the student's answers. Still a side channel: no progress writes.
   - A session is capped at MAX_TURNS user messages; each reply uses a bounded
     token budget so a free API key is not burned by an idle chat.
 """
 
 import json
 import os
+import re
 
 from db import execute, one, query, transaction
 from llm import GenerationFailed, NoProvider, generate_text
 
 MAX_TURNS = int(os.getenv("CHAT_MAX_TURNS", "8"))
 MAX_REPLY_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "512"))
+PRACTICE_TOKENS = int(os.getenv("CHAT_PRACTICE_TOKENS", "1200"))
+PRACTICE_TIMEOUT = int(os.getenv("CHAT_PRACTICE_TIMEOUT", "60"))
 MAX_HISTORY = 12  # last N messages fed back to the model
+PRACTICE_HINTS = (
+    "出题", "出一篇", "做一篇", "选词填空", "完形", "考研题", "考研风格",
+    "练一练", "练习", "测验", "测试我", "考我", "作文", "写一篇", "翻译练习",
+    "阅读题", "批改", "打分", "给我题", "来道题",
+)
 
 SYSTEM_PROMPT = (
     "You are the English AI assistant inside a Chinese postgraduate "
@@ -55,6 +66,35 @@ SYSTEM_PROMPT = (
     "5. Be concise but complete: normally under 160 words; translation and "
     "word lookup may be slightly longer when examples are needed. Never "
     "invent a definition that contradicts supplied ground truth.\n"
+    "\n"
+    "PRACTICE MODE (when the student asks for a quiz, exercise, essay or grading):\n"
+    "- Honor exact counts requested by the student (e.g. 10 blanks or 5 "
+    "questions). Do not silently produce fewer.\n"
+    "- If a TODAY'S WORD BANK block is supplied, build the exercise from those "
+    "words. If it says no plan exists, use standard 考研英语 vocabulary.\n"
+    "- Match real 考研英语 formats, not generic drills:\n"
+    "  * 选词填空/完形填空: a 150-250 word passage with EXACTLY 10 numbered "
+    "blanks (__1__ through __10__). List the word bank ONCE as options A-D "
+    "before the passage; do NOT repeat an option list under every blank. Use "
+    "ONLY words from TODAY'S WORD BANK (or their real inflections) as answers. "
+    "Blanks must be plain __1__ with NO inline letters, answers or hints such "
+    "as (A).\n"
+    "  * 阅读理解: a 350-450 word passage plus 5 four-option questions "
+    "(main idea / detail / inference / vocabulary), numbered 1-5, with "
+    "answer key and short explanations.\n"
+    "  * 翻译: a 考研-style English-to-Chinese task (5 underlined sentences "
+    "or a short paragraph), with a reference translation at the end.\n"
+    "  * 写作: 小作文 (letter/notice, about 100 words) or 大作文 "
+    "(picture/chart, 160-200 words). Give the prompt, word limit and a short "
+    "plan; when the student submits writing, score it 考研-style on content, "
+    "organization and language, then give a corrected version.\n"
+    "- Never reveal answers next to the questions. Put ALL answer keys and "
+    "explanations ONLY in a final '参考答案与解析' section so the student can "
+    "try first.\n"
+    "- Always number items clearly and tell the student how to answer, e.g. "
+    "'请按 1A 2C 3B ... 的格式回复' or '把作文全文发给我，我来批改'.\n"
+    "- When grading, give a per-item verdict, explain why, and an overall "
+    "score. Never claim any of this is recorded in the app's progress.\n"
 )
 
 
@@ -133,8 +173,49 @@ def _context_block(context):
     )
 
 
-def _messages_prompt(context, history, question):
-    lines = [SYSTEM_PROMPT, _context_block(context), "CONVERSATION SO FAR:"]
+def today_word_bank(conn, user_id, limit=40):
+    """Words from the student's plan for today (read-only, never writes progress)."""
+    plan = one(conn,
+               "SELECT id FROM `daily_plan` WHERE user_id=%s AND study_date=CURDATE()",
+               (user_id,))
+    if not plan:
+        return []
+    rows = query(
+        conn,
+        """SELECT DISTINCT w.id, w.word, w.phonetic, w.translation, w.pos
+           FROM `progress` p JOIN `word` w ON w.id=p.word_id
+           WHERE p.user_id=%s AND p.daily_plan_id=%s
+           ORDER BY w.id ASC LIMIT %s""",
+        (user_id, plan["id"], limit),
+    )
+    bank = []
+    for r in rows:
+        meaning = (r["translation"] or "").replace("\n", " ")[:120]
+        bank.append({"word": r["word"], "pos": r["pos"] or "",
+                     "phonetic": r["phonetic"] or "", "meaning": meaning})
+    return bank
+
+
+def wants_practice(question):
+    return any(hint in question for hint in PRACTICE_HINTS)
+
+
+def _practice_block(bank):
+    if not bank:
+        return ("TODAY'S WORD BANK: the student has no study plan for today. "
+                "Use standard 考研英语 vocabulary instead.\n")
+    lines = ["TODAY'S WORD BANK (use these words for any exercise):"]
+    for w in bank:
+        pos = f" {w['pos']}" if w["pos"] else ""
+        lines.append(f"- {w['word']}{pos}: {w['meaning']}")
+    return "\n".join(lines) + "\n"
+
+
+def _messages_prompt(context, history, question, practice_block=""):
+    lines = [SYSTEM_PROMPT, _context_block(context)]
+    if practice_block:
+        lines.append(practice_block)
+    lines.append("CONVERSATION SO FAR:")
     for msg in history[-MAX_HISTORY:]:
         role = "Student" if msg["role"] == "user" else "Tutor"
         lines.append(f"{role}: {msg['content']}")
@@ -205,8 +286,32 @@ def reply(conn, session, user_id, question):
            WHERE session_id=%s AND user_id=%s ORDER BY id ASC""",
         (session["id"], user_id),
     )
-    prompt = _messages_prompt(context, prior, question)
-    answer, provider = generate_text(prompt, max_tokens=MAX_REPLY_TOKENS)
+    is_practice = wants_practice(question) or any(
+        wants_practice(m["content"]) for m in prior if m["role"] == "user"
+    )
+    bank = today_word_bank(conn, user_id) if is_practice else []
+    practice_block = _practice_block(bank) if is_practice else ""
+    prompt = _messages_prompt(context, prior, question, practice_block)
+    budget = PRACTICE_TOKENS if is_practice else MAX_REPLY_TOKENS
+    timeout = PRACTICE_TIMEOUT if is_practice else None
+    answer, provider = generate_text(prompt, max_tokens=budget, timeout=timeout)
+
+    # Free-tier models sometimes produce only a handful of blanks. One bounded
+    # retry with a blunt reminder keeps the exercise close to the exam format.
+    if is_practice and "选词填空" in question:
+        blanks = len(re.findall(r"__\d+__", answer))
+        if blanks < 8:
+            reminder = (
+                f"\nSYSTEM REMINDER: your draft has only {blanks} blanks. "
+                "Rewrite it with EXACTLY 10 blanks numbered __1__ to __10__. "
+                "List the option bank A-D once, do not reveal answers beside "
+                "blanks, and put the answer key at the very end."
+            )
+            retry_answer, retry_provider = generate_text(
+                prompt + reminder, max_tokens=budget, timeout=timeout
+            )
+            if len(re.findall(r"__\d+__", retry_answer)) > blanks:
+                answer, provider = retry_answer, retry_provider
 
     execute(conn, "INSERT INTO `chat_message` (session_id,user_id,role,content) "
                   "VALUES (%s,%s,'user',%s)", (session["id"], user_id, question))

@@ -75,7 +75,7 @@ def configured() -> bool:
     return bool(primary[0] and primary[1]) or bool(fallback[0] and fallback[1])
 
 
-def _chat(base_url, api_key, model, prompt, max_tokens):
+def _chat(base_url, api_key, model, prompt, max_tokens, timeout=None):
     url = base_url.rstrip("/") + "/chat/completions"
     payload = json.dumps({
         "model": model,
@@ -89,12 +89,12 @@ def _chat(base_url, api_key, model, prompt, max_tokens):
                  "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=timeout or TIMEOUT) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     return body["choices"][0]["message"]["content"].strip()
 
 
-def generate_text(prompt: str, max_tokens: int = 900):
+def generate_text(prompt: str, max_tokens: int = 900, timeout: int | None = None):
     """Return (text, provider_name). Raises NoProvider / GenerationFailed."""
     slots = [("primary", _slot()), ("fallback", _slot("LLM_FALLBACK_"))]
     slots = [(name, s) for name, s in slots if s[0] and s[1] and s[2]]
@@ -103,7 +103,7 @@ def generate_text(prompt: str, max_tokens: int = 900):
     errors = []
     for name, (base, key, model) in slots:
         try:
-            return _chat(base, key, model, prompt, max_tokens), f"{name}:{model}"
+            return _chat(base, key, model, prompt, max_tokens, timeout), f"{name}:{model}"
         except (urllib.error.URLError, urllib.error.HTTPError, OSError,
                 KeyError, ValueError, TimeoutError) as exc:
             errors.append(f"{name}: {type(exc).__name__}")

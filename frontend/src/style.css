@@ -76,6 +76,13 @@ body {
 .chat-bubble { padding: 9px 12px; border-radius: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .chat-msg.user .chat-bubble { background: var(--primary-soft); color: var(--ink); border-bottom-right-radius: 3px; }
 .chat-msg.assistant .chat-bubble { background: #f1f5f9; color: var(--ink); border-bottom-left-radius: 3px; }
+.chat-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chat-quick button {
+  border: 1px solid var(--line); background: var(--primary-soft); color: var(--ink);
+  border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.chat-quick button:hover:not(:disabled) { border-color: var(--primary); }
+.chat-quick button:disabled { opacity: .55; cursor: not-allowed; }
 .chat-input { display: flex; gap: 8px; margin-top: 12px; }
 .chat-input input { flex: 1; }
 

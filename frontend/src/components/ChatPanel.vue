@@ -61,6 +61,12 @@ async function send() {
     busy.value = false
   }
 }
+
+async function quickAsk(text) {
+  if (busy.value) return
+  input.value = text
+  await send()
+}
 </script>
 
 <template>
@@ -69,7 +75,7 @@ async function send() {
       <div class="article-head">
         <div>
           <h2>英语 AI · {{ title }}</h2>
-          <p class="muted small">中翻英、英翻中、查单词、问语法、改作文都可以；从短文或题目进来时，我会优先结合那段内容。</p>
+          <p class="muted small">中翻英、英翻中、查词、问语法之外，还能用今天学的词出考研风格题并批改；从短文或题目进来时会优先结合那段内容。</p>
         </div>
         <button class="ghost tiny" @click="emit('close')">关闭</button>
       </div>
@@ -89,6 +95,13 @@ async function send() {
       </div>
 
       <p class="error" v-if="error">{{ error }}</p>
+      <div class="chat-quick">
+        <button type="button" :disabled="busy" @click="quickAsk('用今天学的词出一篇考研风格选词填空（10 空，附 A-D 选项和答案解析）')">选词填空</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一篇考研英语阅读理解（文章 + 5 题 + 答案解析）')">阅读理解</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英译汉练习，附参考译文')">翻译练习</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一篇考研英语大作文题目（图画/图表，160-200 词）并给写作提纲')">大作文</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一篇考研英语小作文题目（书信/通知，约 100 词）')">小作文</button>
+      </div>
       <div class="chat-input">
         <input v-model="input" :disabled="busy" placeholder="中翻英 / 英翻中 / 查词 / 问语法…"
                @keyup.enter="send" />
