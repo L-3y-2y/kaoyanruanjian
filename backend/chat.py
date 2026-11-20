@@ -21,13 +21,18 @@ import os
 import re
 
 from db import execute, one, query, transaction
-from llm import GenerationFailed, NoProvider, generate_text
+from llm import GenerationFailed, NoProvider, generate_json, generate_text
 
 MAX_TURNS = int(os.getenv("CHAT_MAX_TURNS", "8"))
 MAX_REPLY_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "512"))
 PRACTICE_TOKENS = int(os.getenv("CHAT_PRACTICE_TOKENS", "1200"))
 PRACTICE_TIMEOUT = int(os.getenv("CHAT_PRACTICE_TIMEOUT", "60"))
 MAX_HISTORY = 12  # last N messages fed back to the model
+# Structured practice cards are stored as assistant messages whose content begins
+# with this marker followed by JSON. They render as interactive question cards in
+# the browser, but stay in the chat history so follow-up questions keep context.
+CARD_MARKER = "[[PRACTICE_CARD]]"
+CARD_KINDS = ("cloze", "reading")
 PRACTICE_HINTS = (
     "出题", "出一篇", "做一篇", "选词填空", "完形", "考研题", "考研风格",
     "练一练", "练习", "测验", "测试我", "考我", "作文", "写一篇", "翻译练习",
@@ -234,6 +239,151 @@ def _practice_block(bank):
     return "\n".join(lines) + "\n"
 
 
+def _card_schema_prompt(kind):
+    """Strict JSON schema for an interactive practice card."""
+    common = (
+        "Return ONLY a JSON object, no prose, no markdown fences. "
+        "Write a BRAND-NEW passage; never reuse, cloze or paraphrase any text in "
+        "CONTEXT or in 'PASSAGES ALREADY IN THE APP'. Explanations are in Chinese.\n"
+    )
+    if kind == "cloze":
+        return common + (
+            "Schema exactly:\n"
+            '{"kind":"cloze","title":"中文或英文标题","passage":"150-250 word '
+            'English passage with exactly 10 blanks written as __1__ to __10__",'
+            '"options":{"A":"word1","B":"word2",...,"J":"word10"},'
+            '"blanks":[{"no":1,"answer":"A","explanation":"中文解析"},...]}\n'
+            "Rules: options must have keys A-J (10 word-bank entries, each used "
+            "exactly once); use ONLY TODAY'S WORD BANK words or their real "
+            "inflections; blanks numbered 1-10 in order, each answer is one "
+            "option key; every blank has a short Chinese explanation."
+        )
+    return common + (
+        "Schema exactly:\n"
+        '{"kind":"reading","title":"中文或英文标题","passage":"350-450 word '
+        'English passage",'
+        '"questions":[{"no":1,"stem":"English question",'
+        '"options":{"A":"...","B":"...","C":"...","D":"..."},'
+        '"answer":"B","explanation":"中文解析"},...]}\n'
+        "Rules: exactly 5 questions in order covering main idea, detail, "
+        "inference and vocabulary; each has four options A-D, one answer key, "
+        "and a short Chinese explanation; do not reveal the answer in the stem."
+    )
+
+
+def _card_valid(data, kind):
+    if not isinstance(data, dict) or data.get("kind") != kind:
+        return False
+    if not isinstance(data.get("title"), str) or not data["title"].strip():
+        return False
+    if not isinstance(data.get("passage"), str) or len(data["passage"]) < 100:
+        return False
+    if kind == "cloze":
+        if len(re.findall(r"__\d+__", data["passage"])) != 10:
+            return False
+        opts = data.get("options")
+        blanks = data.get("blanks")
+        if not isinstance(opts, dict) or set(opts) != set("ABCDEFGHIJ"):
+            return False
+        if any(not isinstance(v, str) or not v.strip() for v in opts.values()):
+            return False
+        if not isinstance(blanks, list) or len(blanks) != 10:
+            return False
+        if {b.get("no") for b in blanks} != set(range(1, 11)):
+            return False
+        if any(b.get("answer") not in opts for b in blanks):
+            return False
+        if any(not str(b.get("explanation", "")).strip() for b in blanks):
+            return False
+        # Do NOT require answers to be unique: free-tier models sometimes reuse
+        # a word, and that is harmless when each blank is its own A–J dropdown.
+        return True
+    questions = data.get("questions")
+    if not isinstance(questions, list) or len(questions) != 5:
+        return False
+    if {q.get("no") for q in questions} != set(range(1, 6)):
+        return False
+    for q in questions:
+        opts = q.get("options")
+        if not isinstance(opts, dict) or set(opts) != {"A", "B", "C", "D"}:
+            return False
+        if any(not isinstance(v, str) or not v.strip() for v in opts.values()):
+            return False
+        if q.get("answer") not in opts:
+            return False
+        if not str(q.get("stem", "")).strip() or not str(q.get("explanation", "")).strip():
+            return False
+    return True
+
+
+def generate_practice_card(conn, user_id, kind):
+    """Generate one structured, validated practice card. Read-only on progress."""
+    if kind not in CARD_KINDS:
+        raise ValueError("不支持的题型")
+    bank = today_word_bank(conn, user_id)
+    prompt = (
+        _card_schema_prompt(kind) + "\n"
+        + _practice_block(bank)
+        + existing_articles_digest(conn, user_id)
+        + "Student request: generate one " + ("cloze" if kind == "cloze" else "reading")
+        + " exercise now.\nJSON:"
+    )
+    # Free-tier models occasionally miss a field or the exact count. Retry once
+    # with a blunt reminder before giving up, so a transient slip is not fatal.
+    data = None
+    for attempt in range(2):
+        attempt_prompt = prompt if attempt == 0 else (
+            "Your previous reply failed validation. Return ONLY the JSON object "
+            "with the EXACT field names and counts specified, ensuring every "
+            "blank/question has all required fields (no, answer, explanation).\n\n"
+            + prompt
+        )
+        try:
+            data, provider = generate_json(
+                attempt_prompt, validator=lambda d: _card_valid(d, kind),
+                max_tokens=PRACTICE_TOKENS, timeout=PRACTICE_TIMEOUT,
+            )
+            break
+        except (GenerationFailed, ValueError, KeyError, TypeError):
+            if attempt == 1:
+                raise
+    # Normalise: keep only known fields, cap explanation length.
+    card = {"kind": kind, "title": data["title"].strip()[:120],
+            "passage": data["passage"].strip()}
+    if kind == "cloze":
+        card["options"] = {k: v.strip()[:80] for k, v in data["options"].items()}
+        card["blanks"] = [
+            {"no": b["no"], "answer": b["answer"],
+             "explanation": str(b["explanation"]).strip()[:400]}
+            for b in sorted(data["blanks"], key=lambda x: x["no"])
+        ]
+    else:
+        card["questions"] = [
+            {"no": q["no"], "stem": q["stem"].strip(),
+             "options": {k: v.strip()[:120] for k, v in q["options"].items()},
+             "answer": q["answer"],
+             "explanation": str(q["explanation"]).strip()[:400]}
+            for q in sorted(data["questions"], key=lambda x: x["no"])
+        ]
+    card["provider"] = provider
+    return card
+
+
+def send_card(conn, session, user_id, intent, card):
+    """Store a practice card as a chat turn (user intent + marked assistant card)."""
+    if session["turn_count"] >= MAX_TURNS:
+        raise ValueError(f"这次对话已达 {MAX_TURNS} 轮上限，请关闭后重新开始")
+    payload = CARD_MARKER + json.dumps(card, ensure_ascii=False)
+    execute(conn, "INSERT INTO `chat_message` (session_id,user_id,role,content) "
+                  "VALUES (%s,%s,'user',%s)", (session["id"], user_id, intent))
+    execute(conn, "INSERT INTO `chat_message` (session_id,user_id,role,content) "
+                  "VALUES (%s,%s,'assistant',%s)", (session["id"], user_id, payload))
+    execute(conn, "UPDATE `chat_session` SET turn_count=turn_count+1 WHERE id=%s",
+            (session["id"],))
+    return {"role": "assistant", "card": card,
+            "turn_count": session["turn_count"] + 1}
+
+
 def _messages_prompt(context, history, question, practice_block=""):
     lines = [SYSTEM_PROMPT, _context_block(context)]
     if practice_block:
@@ -241,7 +391,19 @@ def _messages_prompt(context, history, question, practice_block=""):
     lines.append("CONVERSATION SO FAR:")
     for msg in history[-MAX_HISTORY:]:
         role = "Student" if msg["role"] == "user" else "Tutor"
-        lines.append(f"{role}: {msg['content']}")
+        content = msg["content"]
+        if content.startswith(CARD_MARKER):
+            try:
+                card = json.loads(content[len(CARD_MARKER):])
+                summary = (f"[An interactive {card['kind']} exercise was shown: "
+                           f"'{card.get('title','')}'. Correct answers and "
+                           f"explanations: "
+                           + json.dumps(card.get("blanks") or card.get("questions"),
+                                        ensure_ascii=False) + "]")
+                content = summary
+            except (ValueError, KeyError, TypeError):
+                content = "[an interactive exercise]"
+        lines.append(f"{role}: {content}")
     lines.append(f"Student: {question}")
     lines.append("Tutor:")
     return "\n".join(lines)

@@ -231,6 +231,19 @@
 
 题目对象：`{id, qtype, stem, options{A..D}|null, ai_graded, answered, user_answer, correct, score, ai_result, scored, correct_option?, standard_answer?}`。**`correct_option` / `standard_answer` 只在已作答后返回**，未答不下发答案。
 
+## 英语 AI 助手（旁路，需配 LLM Key）
+
+| 接口 | 入参 | 返回 / 行为 |
+| --- | --- | --- |
+| `POST /api/chat/start` | `{source_type: general\|article\|question, source_id?, first_question?}` | 建会话（带来源时冻结该文章/题目的真实快照作语境），可选首问；返回 `{session_id, title, reply?}` |
+| `POST /api/chat/ask` | `{session_id, question}` | 多轮文字答疑，返回 `{content, provider, turn_count}`；上下文取最近 12 条历史 |
+| `POST /api/chat/practice` | `{kind: cloze\|reading, session_id?, source_type?, source_id?}` | 生成**结构化交互题卡**：`{session_id, title, card, turn_count}`。card 含 `kind/title/passage`，cloze 另有 `options{A..J}` + `blanks[{no,answer,explanation}]`，reading 另有 `questions[{no,stem,options{A..D},answer,explanation}]`。题卡以 `[[PRACTICE_CARD]]` 标记存为 assistant 消息，判分在前端本地完成 |
+| `GET /api/chat/history?session_id=` | 会话 id | 消息列表（题卡消息 content 以 `[[PRACTICE_CARD]]` 开头 + JSON） |
+| `GET /api/chat/sessions` | — | 本 user 的会话列表（按最近更新） |
+| `POST /api/chat/delete` | `{session_id}` | 删本人会话及其消息 |
+
+所有 chat 接口**只写 `chat_session`/`chat_message`，不碰 progress / answer_log / 五轮状态**。8 轮上限、最多 8 次提问；未配 Key 返回 400。
+
 ## 阶段 4：管理员词库（v2 已实现）
 
 | 接口 | 权限 | 说明 |

@@ -793,6 +793,53 @@ class ChatSessionIn(BaseModel):
     session_id: int
 
 
+class ChatPracticeIn(BaseModel):
+    kind: str  # cloze | reading
+    session_id: int | None = None
+    source_type: str = "general"
+    source_id: int | None = None
+
+
+@app.post("/api/chat/practice")
+def chat_practice(req: ChatPracticeIn, user=Depends(current_user)):
+    """Generate a structured, interactive practice card (cloze / reading).
+
+    The card is stored as a marked assistant message in the chat session, so it
+    stays in context for follow-up questions and is still a strict side channel:
+    nothing here writes progress / answer_log / the five-round state.
+    """
+    if not llm_configured():
+        raise HTTPException(status_code=400, detail="请先配置 LLM_API_KEY 再用英语 AI")
+    if req.kind not in ("cloze", "reading"):
+        raise HTTPException(status_code=400, detail="不支持的题型")
+    if req.source_type not in ("article", "question", "general"):
+        raise HTTPException(status_code=400, detail="对话来源不合法")
+    with transaction() as conn:
+        if req.session_id:
+            session = chat_service.get_session(conn, req.session_id, user["id"])
+            if not session:
+                raise HTTPException(status_code=404, detail="找不到这次对话")
+            sid = req.session_id
+        else:
+            context = chat_service.build_context(conn, req.source_type,
+                                                 req.source_id, user["id"])
+            if req.source_type in ("article", "question") and context is None:
+                raise HTTPException(status_code=404, detail="找不到这篇内容或无权访问")
+            sid = chat_service.start_session(conn, user["id"], req.source_type,
+                                             req.source_id, context)
+            session = chat_service.get_session(conn, sid, user["id"])
+        label = ("选词填空" if req.kind == "cloze" else "阅读理解")
+        intent = f"出一篇考研风格{label}题"
+        try:
+            card = chat_service.generate_practice_card(conn, user["id"], req.kind)
+            result = chat_service.send_card(conn, session, user["id"], intent, card)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except (GenerationFailed, NoProvider) as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True, "session_id": sid, "title": session["title"], **result}
+
+
 @app.get("/api/chat/sessions")
 def chat_sessions(user=Depends(current_user)):
     with transaction() as conn:

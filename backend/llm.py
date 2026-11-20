@@ -110,14 +110,15 @@ def generate_text(prompt: str, max_tokens: int = 900, timeout: int | None = None
     raise GenerationFailed("大模型调用失败（" + "; ".join(errors) + "），请检查 .env 配置或稍后重试")
 
 
-def generate_json(prompt: str, validator=None, max_tokens: int = 900):
+def generate_json(prompt: str, validator=None, max_tokens: int = 900,
+                  timeout: int | None = None):
     """Return (parsed JSON, provider). One repair retry on bad JSON.
 
     Free-tier providers occasionally wrap JSON in prose or markdown fences; a
     repair call is cheaper than dropping the whole generation to the local
     fallback. Network failures propagate so the caller can fall back cleanly.
     """
-    text, provider = generate_text(prompt, max_tokens=max_tokens)
+    text, provider = generate_text(prompt, max_tokens=max_tokens, timeout=timeout)
     try:
         data = _extract_json(text)
         if validator is not None and not validator(data):
@@ -128,7 +129,7 @@ def generate_json(prompt: str, validator=None, max_tokens: int = 900):
             "Your last reply was not a valid JSON object satisfying the schema. "
             "Return ONLY the corrected JSON, with no prose or markdown.\n\n" + prompt
         )
-        text, provider = generate_text(repair, max_tokens=max_tokens)
+        text, provider = generate_text(repair, max_tokens=max_tokens, timeout=timeout)
         data = _extract_json(text)
         if validator is not None and not validator(data):
             raise GenerationFailed("大模型返回格式不符合要求（已重试一次）")
