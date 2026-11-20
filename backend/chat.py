@@ -72,6 +72,10 @@ SYSTEM_PROMPT = (
     "questions). Do not silently produce fewer.\n"
     "- If a TODAY'S WORD BANK block is supplied, build the exercise from those "
     "words. If it says no plan exists, use standard 考研英语 vocabulary.\n"
+    "- WRITE A BRAND-NEW PASSAGE. Never reuse, cloze, paraphrase or continue "
+    "any passage shown in CONTEXT or in the 'PASSAGES ALREADY IN THE APP' "
+    "list. Pick a different topic and setting and write original sentences. "
+    "The exercise is NOT a blanked-out copy of an existing article.\n"
     "- Match real 考研英语 formats, not generic drills:\n"
     "  * 选词填空/完形填空: a 150-250 word passage with EXACTLY 10 numbered "
     "blanks (__1__ through __10__). List the word bank ONCE as options A-D "
@@ -196,6 +200,25 @@ def today_word_bank(conn, user_id, limit=40):
     return bank
 
 
+def existing_articles_digest(conn, user_id, limit=8):
+    """Titles/excerpts the generator must avoid, so exercises are never clones."""
+    rows = query(
+        conn,
+        """SELECT title, LEFT(body, 260) AS excerpt FROM `article`
+           WHERE user_id=%s ORDER BY id DESC LIMIT %s""",
+        (user_id, limit),
+    )
+    if not rows:
+        return ""
+    lines = ["PASSAGES ALREADY IN THE APP (do NOT reuse, cloze or paraphrase "
+             "any of them; write a completely different passage):"]
+    for r in rows:
+        title = (r["title"] or "(untitled)").replace("\n", " ")[:80]
+        excerpt = (r["excerpt"] or "").replace("\n", " ")[:220]
+        lines.append(f"- {title}: {excerpt}")
+    return "\n".join(lines) + "\n"
+
+
 def wants_practice(question):
     return any(hint in question for hint in PRACTICE_HINTS)
 
@@ -289,9 +312,16 @@ def reply(conn, session, user_id, question):
     is_practice = wants_practice(question) or any(
         wants_practice(m["content"]) for m in prior if m["role"] == "user"
     )
-    bank = today_word_bank(conn, user_id) if is_practice else []
-    practice_block = _practice_block(bank) if is_practice else ""
-    prompt = _messages_prompt(context, prior, question, practice_block)
+    if is_practice:
+        bank = today_word_bank(conn, user_id)
+        # Drop the article context on purpose: otherwise the model simply
+        # blanks out the passage the student was reading.
+        practice_block = _practice_block(bank) + existing_articles_digest(conn, user_id)
+        effective_context = None
+    else:
+        practice_block = ""
+        effective_context = context
+    prompt = _messages_prompt(effective_context, prior, question, practice_block)
     budget = PRACTICE_TOKENS if is_practice else MAX_REPLY_TOKENS
     timeout = PRACTICE_TIMEOUT if is_practice else None
     answer, provider = generate_text(prompt, max_tokens=budget, timeout=timeout)
