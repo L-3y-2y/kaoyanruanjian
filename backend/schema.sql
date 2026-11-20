@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS `question` (
 CREATE TABLE IF NOT EXISTS `chat_session` (
   `id`          INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`     INT NOT NULL,
-  `title`       VARCHAR(128) NOT NULL DEFAULT '英语答疑',
+  `title`       VARCHAR(128) NOT NULL DEFAULT '通用英语',
   `source_type` VARCHAR(16)  NULL,   -- 'article' | 'question' | 'general'
   `source_id`   INT          NULL,   -- article.id or question.id
   `context`     MEDIUMTEXT   NULL,   -- frozen snapshot: article body / question stem etc.

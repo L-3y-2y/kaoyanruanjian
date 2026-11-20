@@ -8,7 +8,7 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const sessionId = ref(null)
-const title = ref(props.context?.title || '英语答疑')
+const title = ref(props.context?.title || '通用英语')
 const messages = ref([])
 const input = ref('')
 const busy = ref(false)
@@ -68,15 +68,15 @@ async function send() {
     <section class="card chat-panel">
       <div class="article-head">
         <div>
-          <h2>英语答疑 · {{ title }}</h2>
-          <p class="muted small">就这段内容提问：词义、句子结构、题目为什么这么选。回答只围绕英语学习。</p>
+          <h2>英语 AI · {{ title }}</h2>
+          <p class="muted small">中翻英、英翻中、查单词、问语法、改作文都可以；从短文或题目进来时，我会优先结合那段内容。</p>
         </div>
         <button class="ghost tiny" @click="emit('close')">关闭</button>
       </div>
 
       <div class="chat-log" ref="scroller">
         <div v-if="!messages.length" class="chat-empty muted">
-          直接用英文或中文提问都可以。比如「这句话是什么意思」「为什么选 B」。
+          中文英文都可以问。比如「『坚持』英语怎么说」「abandon 是什么意思」「这句语法怎么分析」「为什么选 B」。
         </div>
         <div v-for="(m, i) in messages" :key="i" class="chat-msg" :class="m.role">
           <span class="chat-who">{{ m.role === 'user' ? '你' : 'AI 老师' }}</span>
@@ -90,7 +90,7 @@ async function send() {
 
       <p class="error" v-if="error">{{ error }}</p>
       <div class="chat-input">
-        <input v-model="input" :disabled="busy" placeholder="问一个关于这段英语的问题…"
+        <input v-model="input" :disabled="busy" placeholder="中翻英 / 英翻中 / 查词 / 问语法…"
                @keyup.enter="send" />
         <button class="primary" :disabled="busy || !input.trim()" @click="send">发送</button>
       </div>

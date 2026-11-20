@@ -808,7 +808,7 @@ def chat_sessions(user=Depends(current_user)):
 def chat_start(req: ChatStartIn, user=Depends(current_user)):
     """Open a tutor session, optionally frozen to one article or question."""
     if not llm_configured():
-        raise HTTPException(status_code=400, detail="请先配置 LLM_API_KEY 再用 AI 答疑")
+        raise HTTPException(status_code=400, detail="请先配置 LLM_API_KEY 再用英语 AI")
     if req.source_type not in ("article", "question", "general"):
         raise HTTPException(status_code=400, detail="对话来源不合法")
     with transaction() as conn:
@@ -829,7 +829,7 @@ def chat_start(req: ChatStartIn, user=Depends(current_user)):
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
     payload = {"ok": True, "session_id": sid,
-               "title": (context["label"] if context else "英语答疑")}
+               "title": (context.get("title") or context["label"]) if context else "通用英语"}
     if first:
         payload["reply"] = first
     return payload
@@ -847,7 +847,7 @@ def chat_history(session_id: int, user=Depends(current_user)):
 @app.post("/api/chat/ask")
 def chat_ask(req: ChatAskIn, user=Depends(current_user)):
     if not llm_configured():
-        raise HTTPException(status_code=400, detail="请先配置 LLM_API_KEY 再用 AI 答疑")
+        raise HTTPException(status_code=400, detail="请先配置 LLM_API_KEY 再用英语 AI")
     with transaction() as conn:
         session = chat_service.get_session(conn, req.session_id, user["id"])
         if not session:

@@ -5,8 +5,10 @@ Design rules (mirror docs/design-decisions.md):
     mastery states. Chat is practice only, like daily articles / weekly reading.
   - The model receives a FROZEN snapshot of the real article or question plus
     the saved translation snapshots, so it cannot invent word meanings.
-  - The system prompt confines it to English-study Q&A. It answers in simple
-    English (with a short Chinese gloss when asked), never drifts to other topics.
+  - The system prompt keeps it on English-learning topics but does NOT restrict
+    it to a selected passage: translation (ZH<->EN), word lookup, grammar,
+    writing polish and general English questions are all supported. When a
+    passage/question is selected, its frozen snapshot is ground truth.
   - A session is capped at MAX_TURNS user messages; each reply uses a bounded
     token budget so a free API key is not burned by an idle chat.
 """
@@ -18,23 +20,41 @@ from db import execute, one, query, transaction
 from llm import GenerationFailed, NoProvider, generate_text
 
 MAX_TURNS = int(os.getenv("CHAT_MAX_TURNS", "8"))
-MAX_REPLY_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "320"))
+MAX_REPLY_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "512"))
 MAX_HISTORY = 12  # last N messages fed back to the model
 
 SYSTEM_PROMPT = (
-    "You are the English tutor inside a Chinese postgraduate entrance-exam "
-    "vocabulary app. Your ONLY job is to help the student understand English: "
-    "word meanings, grammar, sentence structure, and reading questions.\n"
+    "You are the English AI assistant inside a Chinese postgraduate "
+    "entrance-exam vocabulary app. You help with ANY English-learning question: "
+    "Chinese<->English translation, looking up a word (meaning, part of speech, "
+    "pronunciation, collocations, example sentences), grammar and sentence "
+    "structure, writing polish, and reading passages or questions when supplied.\n"
     "Rules you must never break:\n"
-    "1. Stay strictly on English-study topics. If the student asks about "
-    "anything else, politely steer back to the English text in a short reply.\n"
-    "2. Use the supplied context as ground truth. Never invent a definition or "
-    "a fact that is not in the context.\n"
-    "3. Answer mainly in plain English. Use short sentences and, when it helps "
-    "a Chinese learner, add a brief Chinese gloss in parentheses.\n"
-    "4. When explaining a word, quote how it appears in the context and give "
-    "its Chinese meaning from the context only.\n"
-    "5. Keep each reply under 120 words. Be patient and concrete.\n"
+    "1. Stay on English-learning topics. If the question is unrelated to "
+    "English, politely say you can only help with English and invite an "
+    "English-related question.\n"
+    "2. Language rule (STRICT):\n"
+    "   - If the student gives Chinese and asks for English (怎么说/英语怎么说/"
+    "translate to English), answer with the English word or phrase FIRST, then "
+    "a short Chinese note. Example: '坚持 英语怎么说' -> 'persistent (adj.) / "
+    "insist (v.) — 坚持'.\n"
+    "   - If the student gives an English word or phrase and asks what it means "
+    "(是什么意思/什么意思/translate to Chinese), answer IN CHINESE FIRST with "
+    "the core Chinese meaning, then an optional short English note. Example: "
+    "'abandon 是什么意思' -> 'abandon：动词，放弃；抛弃。例：He abandoned the plan. "
+    "他放弃了计划。' Do NOT answer this kind of question mainly in English.\n"
+    "   - Otherwise match the language the student used. Add bilingual examples "
+    "when they help a Chinese learner.\n"
+    "3. When a CONTEXT block is supplied, treat its passage/question and the "
+    "saved word meanings as ground truth for questions about that material. "
+    "Do NOT confine yourself to it: general vocabulary and grammar questions "
+    "are allowed even with no passage selected.\n"
+    "4. For a word lookup, include the English spelling, phonetic symbol if "
+    "known, part of speech, core Chinese meaning, one natural example sentence "
+    "with translation, and common collocations when relevant.\n"
+    "5. Be concise but complete: normally under 160 words; translation and "
+    "word lookup may be slightly longer when examples are needed. Never "
+    "invent a definition that contradicts supplied ground truth.\n"
 )
 
 
@@ -95,8 +115,11 @@ def build_context(conn, source_type, source_id, user_id):
 
 def _context_block(context):
     if not context:
-        return ("CONTEXT: the student did not pick a specific passage. "
-                "If they ask about vocabulary, ask them to open a passage first.\n")
+        return ("CONTEXT: no specific passage or question was selected. "
+                "Answer general English questions (translation, vocabulary, "
+                "grammar, writing) directly. Only if the student refers to "
+                "'this passage' or 'this question' without one selected, ask "
+                "them to open it first.\n")
     if "body" in context:
         return (
             f"CONTEXT ({context['label']}):\n"
@@ -122,7 +145,7 @@ def _messages_prompt(context, history, question):
 
 def start_session(conn, user_id, source_type, source_id, context):
     context_json = json.dumps(context, ensure_ascii=False) if context else None
-    label = context["label"] if context else "英语答疑"
+    label = context["label"] if context else "通用英语"
     execute(
         conn,
         """INSERT INTO `chat_session`

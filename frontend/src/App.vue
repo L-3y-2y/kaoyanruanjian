@@ -131,7 +131,7 @@ onMounted(async () => {
         <button :class="{ active: tab === 'articles' }" @click="goTab('articles')">每日短文</button>
         <button :class="{ active: tab === 'reading' }" @click="goTab('reading')">周阅读</button>
         <button v-if="me.is_admin || me.local" :class="{ active: tab === 'admin' }" @click="goTab('admin')">词库管理</button>
-        <button v-if="health?.llm_configured" @click="openChat(null)">AI 答疑</button>
+        <button v-if="health?.llm_configured" @click="openChat(null)">英语 AI</button>
         <span class="pool" v-if="pool">未掌握池 {{ pool.available }} / {{ pool.total }}</span>
       </nav>
 
