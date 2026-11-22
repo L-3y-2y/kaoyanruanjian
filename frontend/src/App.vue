@@ -6,7 +6,8 @@ import LearnView from './components/LearnView.vue'
 import ReviewView from './components/ReviewView.vue'
 import ArticlesView from './components/ArticlesView.vue'
 import ReadingView from './components/ReadingView.vue'
-import AdminView from './components/AdminView.vue'
+import WordBank from './components/WordBank.vue'
+import AdminConsole from './components/AdminConsole.vue'
 import ModelPanel from './components/ModelPanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 
@@ -22,6 +23,16 @@ const localMode = ref(true)
 const showAuth = ref(false)
 const batchesCount = ref(0)
 const error = ref('')
+const theme = ref('light')
+
+function applyTheme(t) {
+  theme.value = t
+  document.documentElement.setAttribute('data-theme', t)
+  localStorage.setItem('ky-theme', t)
+}
+function toggleTheme() {
+  applyTheme(theme.value === 'light' ? 'dark' : 'light')
+}
 
 async function refreshHeader() {
   try {
@@ -82,6 +93,7 @@ provide('goTab', goTab)
 provide('openChat', openChat)
 
 onMounted(async () => {
+  applyTheme(localStorage.getItem('ky-theme') === 'dark' ? 'dark' : 'light')
   await loadMe()
   await refreshHeader()
   await loadModelInfo()
@@ -90,34 +102,44 @@ onMounted(async () => {
 
 <template>
   <div class="app">
-    <header class="topbar">
-      <div>
-        <h1>考研背单词</h1>
-        <p class="sub">五轮递进 · 日期批次复习 · 短文与周阅读</p>
-      </div>
-      <div class="header-right">
-        <div class="db-chip" v-if="health">
-          <span class="dot"></span>
-          已连接 {{ health.database }}
-          <small>词库 {{ health.word_count }} 词 · {{ health.server_date }}</small>
-          <button class="model-chip" @click="showModel = true">
-            {{ health.llm_configured ? '已接 · ' + (health.llm_model || '大模型') : '本地生成' }}
-          </button>
-        </div>
-        <div class="account" v-if="me">
-          <span class="who">{{ me.is_admin ? '管理员' : '账号' }}：{{ me.username }}
-            <em v-if="me.local">本机模式</em></span>
-          <button class="ghost tiny" @click="logout">切换账号</button>
-        </div>
-      </div>
-    </header>
-
     <AuthPanel v-if="showAuth || !me" @done="onAuthDone" @cancel="showAuth = false" />
 
     <ModelPanel v-if="showModel" :info="modelInfo" @close="showModel = false" @changed="onModelChanged" />
     <ChatPanel v-if="chatOpen" :context="chatContext" @close="chatOpen = false" />
 
     <template v-if="me && !showAuth">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo">研</div>
+          <div>
+            <h1>考研背单词</h1>
+            <p class="sub">五轮递进 · 日期批次复习 · 短文与周阅读</p>
+          </div>
+        </div>
+        <div class="header-right">
+          <div class="db-chip" v-if="health">
+            <span class="dot"></span>
+            已连接 {{ health.database }}
+            <small>词库 {{ health.word_count }} 词 · {{ health.server_date }}</small>
+            <button v-if="me.is_admin || me.local" class="model-chip" @click="showModel = true">
+              {{ health.llm_configured ? '已接 · ' + (health.llm_model || '大模型') : '本地生成' }}
+            </button>
+            <span v-else class="model-chip static">
+              {{ health.llm_configured ? '已接 · ' + (health.llm_model || '大模型') : '本地生成' }}
+            </span>
+          </div>
+          <div class="account" v-if="me">
+            <span class="who" :class="{ admin: me.is_admin }">
+              {{ me.is_admin ? '管理员' : (me.local ? '本机模式' : '账号') }}：{{ me.username }}
+            </span>
+            <button class="ghost tiny" @click="logout">切换账号</button>
+            <button class="theme-toggle" @click="toggleTheme">
+              {{ theme === 'light' ? '🌙 深色' : '☀️ 浅色' }}
+            </button>
+          </div>
+        </div>
+      </header>
+
       <div class="notice" v-if="me.local">
         当前是<strong>本机模式</strong>：进度存在本机账号里。点「切换账号」注册，已有进度会自动归到你名下；注册后各账号数据互相隔离。「词库管理」在这里直接可用，无需管理员账号。
       </div>
@@ -130,7 +152,10 @@ onMounted(async () => {
         </button>
         <button :class="{ active: tab === 'articles' }" @click="goTab('articles')">每日短文</button>
         <button :class="{ active: tab === 'reading' }" @click="goTab('reading')">周阅读</button>
-        <button v-if="me.is_admin || me.local" :class="{ active: tab === 'admin' }" @click="goTab('admin')">词库管理</button>
+        <button v-if="me.local" :class="{ active: tab === 'wordbank' }" @click="goTab('wordbank')">词库管理</button>
+        <button v-if="me.is_admin" class="admin-tab" :class="{ active: tab === 'admin' }" @click="goTab('admin')">
+          管理后台<span class="admin-dot"></span>
+        </button>
         <button v-if="health?.llm_configured" @click="openChat(null)">英语 AI</button>
         <span class="pool" v-if="pool">未掌握池 {{ pool.available }} / {{ pool.total }}</span>
       </nav>
@@ -139,7 +164,8 @@ onMounted(async () => {
       <ReviewView v-else-if="tab === 'review'" />
       <ArticlesView v-else-if="tab === 'articles'" />
       <ReadingView v-else-if="tab === 'reading'" />
-      <AdminView v-else-if="tab === 'admin'" />
+      <WordBank v-else-if="tab === 'wordbank'" />
+      <AdminConsole v-else-if="tab === 'admin'" :me="me" :health="health" />
 
       <footer>
         进度、短文快照与答卷只存在服务端 MySQL 的 {{ health?.database || 'kaoyanruanjian' }} 库里；

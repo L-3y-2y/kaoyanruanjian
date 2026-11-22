@@ -385,8 +385,13 @@ class ModelIn(BaseModel):
 
 
 @app.post("/api/llm/model")
-def llm_switch_model(req: ModelIn, user=Depends(current_user)):
-    """Switch the active model among presets; takes effect without restart."""
+def llm_switch_model(req: ModelIn, user=Depends(require_admin)):
+    """Switch the active model among presets; takes effect without restart.
+
+    Admin-only: the model behind every learner's article/reading/chat generation
+    is a system-wide setting, so only admins (or the trusted local self-use
+    account) may change it. Regular learners still read it via /api/health.
+    """
     if not llm_configured():
         raise HTTPException(status_code=400, detail="请先配置 LLM_API_KEY 再切换模型")
     try:
@@ -399,7 +404,7 @@ def llm_switch_model(req: ModelIn, user=Depends(current_user)):
 
 
 @app.post("/api/llm/test")
-def llm_test_model(user=Depends(current_user)):
+def llm_test_model(user=Depends(require_admin)):
     """Live probe of the active model; reports busy/limit errors verbatim."""
     return test_model()
 
@@ -778,6 +783,32 @@ def admin_stats(user=Depends(require_admin)):
             "articles": one(conn, "SELECT COUNT(*) AS c FROM `article`")["c"],
             "sources": sources,
         }
+
+
+@app.get("/api/admin/users")
+def admin_users(user=Depends(require_admin)):
+    """Admin-only: every registered learner with a study summary. This is the
+    concrete privilege that separates the admin console from a learner's view —
+    no learner endpoint ever lists other accounts or their progress."""
+    with transaction() as conn:
+        rows = query(
+            conn,
+            """SELECT u.id, u.username, u.created_at,
+                      (SELECT COUNT(*) FROM `daily_plan` dp
+                        WHERE dp.user_id=u.id) AS plans,
+                      (SELECT COUNT(DISTINCT p.word_id) FROM `progress` p
+                        WHERE p.user_id=u.id AND p.stage='mastered') AS mastered_words,
+                      (SELECT COUNT(*) FROM `progress` p
+                        WHERE p.user_id=u.id AND p.status='done') AS done_items,
+                      (SELECT COUNT(*) FROM `chat_session` c
+                        WHERE c.user_id=u.id) AS chat_sessions
+               FROM `user` u
+               WHERE u.password_hash<>''
+               ORDER BY u.id""",
+        )
+        for r in rows:
+            r["created_at"] = str(r["created_at"])
+        return {"users": rows}
 
 
 @app.get("/api/admin/words")
