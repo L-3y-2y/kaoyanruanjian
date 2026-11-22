@@ -212,3 +212,4 @@ backend\.venv\Scripts\python.exe scripts\verify_full.py
 
 - `docs/api-contract.md` —— 全部接口的地址 / 入参 / 返回 / 错误
 - `docs/design-decisions.md` —— 0.3 边界细节、阶段 4/5 的实现取舍
+- `docs/待修复问题清单.md` —— 第三方评估发现的问题 + 逐条核查结论与处理状态

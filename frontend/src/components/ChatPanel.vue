@@ -112,12 +112,12 @@ function askAbout(text) {
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
     <section class="card chat-panel">
+      <button class="chat-close" @click="emit('close')" aria-label="关闭">✕</button>
       <div class="article-head">
         <div>
           <h2>英语 AI · {{ title }}</h2>
           <p class="muted small">中翻英、英翻中、查词、问语法、自由聊天都可以；点「交互」按钮用今天学的词出考研题，直接点选作答、即时判分看解析。从短文或题目进来时会优先结合那段内容。</p>
         </div>
-        <button class="ghost tiny" @click="emit('close')">关闭</button>
       </div>
 
       <div class="chat-log" ref="scroller">

@@ -1,5 +1,5 @@
 <script setup>
-import { store, openModel, logout, toggleTheme } from '../store.js'
+import { store, openModel, openSwitchAccount, toggleTheme } from '../store.js'
 </script>
 
 <template>
@@ -27,7 +27,7 @@ import { store, openModel, logout, toggleTheme } from '../store.js'
         <span class="who" :class="{ admin: store.me.is_admin }">
           {{ store.me.is_admin ? '管理员' : (store.me.local ? '本机模式' : '账号') }}：{{ store.me.username }}
         </span>
-        <button class="ghost tiny" @click="logout">切换账号</button>
+        <button class="ghost tiny" @click="openSwitchAccount">切换账号</button>
         <button class="theme-toggle" @click="toggleTheme">
           {{ store.theme === 'light' ? '🌙 深色' : '☀️ 浅色' }}
         </button>

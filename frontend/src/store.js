@@ -84,11 +84,19 @@ export function closeModel() {
   store.showModel = false
 }
 
+export function openSwitchAccount() {
+  // 非破坏：只弹出登录框，不登出当前账号，可随时点「返回」取消。
+  store.showAuth = true
+}
+
 export async function logout() {
+  // 真正登出：清空服务端会话，回到本机模式/未登录（不再弹出登录框）。
   await api('/api/auth/logout', { method: 'POST' }).catch(() => {})
   closeChat()
-  store.showAuth = true
+  store.showAuth = false
   await loadMe()
+  store.activeTab = 'learn'
+  store.error = ''
 }
 
 export async function onAuthDone() {

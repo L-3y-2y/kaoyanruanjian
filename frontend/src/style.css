@@ -387,6 +387,21 @@ button.kw:hover { background: var(--primary-soft); }
 /* ------------------------------------------------------------------ auth */
 
 .auth-wrap { max-width: 520px; margin: 44px auto; }
+.auth-card { position: relative; }
+.auth-close {
+  position: absolute; top: 14px; right: 14px;
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--surface); color: var(--muted);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.auth-close:hover { color: var(--ink); border-color: var(--line-strong); }
+.auth-logout {
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted);
+}
+.auth-logout strong { color: var(--ink); }
 .auth-card h2 { margin-bottom: 8px; }
 .auth-modes { display: flex; gap: 6px; margin: 18px 0 6px; padding: 5px; background: var(--surface); border-radius: 11px; }
 .auth-modes button { flex: 1; border: 0; background: transparent; padding: 9px 12px; border-radius: 8px; color: var(--muted); }
@@ -419,8 +434,18 @@ button.kw:hover { background: var(--primary-soft); }
 .test-result.bad { background: var(--danger-soft); color: var(--danger); }
 
 .chat-panel {
+  position: relative;
   width: 100%; max-width: 620px; max-height: 88vh; display: flex; flex-direction: column; padding: 22px;
 }
+.chat-close {
+  position: absolute; top: 14px; right: 14px;
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--surface); color: var(--muted);
+  font-size: 14px; line-height: 1; cursor: pointer; flex-shrink: 0;
+}
+.chat-close:hover { color: var(--ink); border-color: var(--line-strong); }
 .chat-log {
   flex: 1; overflow: auto; min-height: 220px; max-height: 54vh;
   padding: 8px 4px; display: flex; flex-direction: column; gap: 12px;

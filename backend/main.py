@@ -10,6 +10,7 @@ Rules that must never be broken (see docs/design-decisions.md):
 """
 
 import json
+import logging
 import os
 import re
 import threading
@@ -64,7 +65,9 @@ def _scheduler_loop():
         try:
             _publish_due_week()
         except Exception:
-            pass  # open-time fallback in reading_payload still covers it
+            # open-time fallback in reading_payload still covers it, but log so
+            # failures stay observable instead of being silently swallowed.
+            logging.exception("weekly article scheduled publish failed")
         _scheduler_stop.wait(600)
 
 

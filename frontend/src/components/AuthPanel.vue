@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { api } from '../api.js'
+import { store, logout } from '../store.js'
 
 const emit = defineEmits(['done', 'cancel'])
 const mode = ref('login')          // login | register | admin
@@ -9,6 +10,10 @@ const password = ref('')
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
+
+async function doLogout() {
+  await logout()
+}
 
 async function submit() {
   if (busy.value) return
@@ -38,6 +43,7 @@ async function submit() {
 <template>
   <div class="auth-wrap">
     <section class="card auth-card">
+      <button class="auth-close" @click="emit('cancel')" aria-label="返回">✕</button>
       <h2>{{ mode === 'register' ? '创建账号' : mode === 'admin' ? '管理员登录' : '登录' }}</h2>
       <p class="muted small">
         进度、短文、阅读答卷全部按账号隔离保存。首次注册会自动接管本机已有的学习进度，不会丢数据。
@@ -66,7 +72,11 @@ async function submit() {
         <button class="primary" :disabled="busy || !username || password.length < 8" @click="submit">
           {{ mode === 'register' ? '注册并登录' : '登录' }}
         </button>
-        <button class="ghost" @click="emit('cancel')">返回本机模式</button>
+        <button class="ghost" @click="emit('cancel')">返回</button>
+      </div>
+      <div class="auth-logout" v-if="store.me && !store.me.local">
+        当前登录：<strong>{{ store.me.username }}</strong>
+        <button class="ghost tiny" @click="doLogout">退出登录</button>
       </div>
       <p class="hint">
         没有预置管理员账号，也没有默认密码。本机模式直接点「词库管理」即可用；需要正式管理员登录时，双击根目录的 <code>setup_admin.bat</code> 自己设置账号密码。

@@ -5,7 +5,14 @@ export async function api(path, options = {}) {
     ...options
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+  if (!res.ok) {
+    // 会话过期 / 未登录时给出明确引导；登录、注册接口的 401 是「密码错误」，
+    // 保留后端返回的具体原因。
+    if (res.status === 401 && !path.includes('/auth/')) {
+      throw new Error('登录已过期，请重新登录')
+    }
+    throw new Error(data.detail || `HTTP ${res.status}`)
+  }
   return data
 }
 
