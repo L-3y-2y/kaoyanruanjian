@@ -405,7 +405,7 @@ def daily_batches(conn, user_id):
                     WHERE a.user_id=dp.user_id AND a.kind='daily'
                       AND a.daily_plan_id=dp.id) AS article_count
            FROM `daily_plan` dp
-           WHERE dp.user_id=%s AND dp.stage='mastered'
+           WHERE dp.user_id=%s AND dp.stage IN ('memorized','mastered')
            ORDER BY dp.study_date ASC, dp.id ASC""",
         (user_id,),
     )
@@ -435,8 +435,8 @@ def ensure_daily_articles(conn, user_id, plan_id, scene="default"):
     )
     if not plan:
         return None, "找不到该日期批次"
-    if plan["stage"] != "mastered":
-        return None, "短文只在该批次 5 轮全走完（真正学完）后才出现"
+    if plan["stage"] not in ("memorized", "mastered"):
+        return None, "短文只在学完当批次的 5 轮后才出现"
     existing = query(
         conn,
         """SELECT * FROM `article` WHERE user_id=%s AND kind='daily'

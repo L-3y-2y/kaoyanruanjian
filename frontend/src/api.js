@@ -27,8 +27,8 @@ export function playWord(text) {
 
 export const stageLabel = {
   learning: '学习中',
-  memorized: '已背下（初步）',
-  mastered: '真正学完'
+  memorized: '已学完',
+  mastered: '已背熟'
 }
 
 export const roundName = {

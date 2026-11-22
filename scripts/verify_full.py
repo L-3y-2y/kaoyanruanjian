@@ -105,31 +105,37 @@ def scalar(sql, args=()):
 
 def drive_rounds(cli, mode, plan_id, expected):
     counts = {}
-    suffix = f"&plan_id={plan_id}" if mode == "review" else ""
-    for _ in range(400):
-        s = cli.call(f"/api/state?mode={mode}{suffix}")
+    for _ in range(600):
+        s = cli.call(f"/api/state?mode={mode}")
         kind = s["kind"]
-        if kind in ("learning_done", "review_done"):
+        if kind in ("learning_done", "review_done", "review_empty"):
             print(f"  [{mode}] finished -> {kind}")
             break
-        assert kind.startswith("r"), f"unexpected state {kind}"
-        r = s["round"]
-        counts[kind] = counts.get(kind, 0) + 1
         pid = s["progress_id"]
-        if r == 1:
-            payload = {"action": "known"}
-        elif r in (2, 3):
-            payload = {"action": "spell", "value": s["speak_text"]}
-        elif r == 5:
-            payload = {"action": "spell", "value": spelling(pid)}
-        elif r == 4:
-            shown = cli.call("/api/answer", "POST", {
-                "progress_id": pid, "action": "r4_reveal", "value": "测试作答"})
-            assert shown["standard_answer"] is not None, "R4 must show the standard answer"
-            payload = {"action": "self_assess", "value": "测试作答",
-                       "assessment": "remembered"}
-        else:
-            raise AssertionError(f"unexpected round {r}")
+        if mode == "learn":
+            assert kind.startswith("r"), f"unexpected state {kind}"
+            counts[kind] = counts.get(kind, 0) + 1
+            r = s["round"]
+            if r == 1:
+                payload = {"action": "known"}
+            elif r in (2, 3):
+                payload = {"action": "spell", "value": s["speak_text"]}
+            elif r == 5:
+                payload = {"action": "spell", "value": spelling(pid)}
+            elif r == 4:
+                shown = cli.call("/api/answer", "POST", {
+                    "progress_id": pid, "action": "r4_reveal", "value": "测试作答"})
+                assert shown["standard_answer"] is not None, "R4 must show the standard answer"
+                payload = {"action": "self_assess", "value": "测试作答",
+                           "assessment": "remembered"}
+            else:
+                raise AssertionError(f"unexpected round {r}")
+        else:  # review: Ebbinghaus three sub-steps (认识 -> 听写 -> 默写)
+            assert kind == "review", f"unexpected state {kind}"
+            sub = s["sub_step"]
+            counts[f"step{sub}"] = counts.get(f"step{sub}", 0) + 1
+            payload = ({"action": "r_known"} if sub == 1
+                       else {"action": "r_spell", "value": spelling(pid)})
         result = cli.call("/api/answer", "POST", {"progress_id": pid, **payload})
         assert result["duplicate"] is False, "duplicate-submit guard tripped unexpectedly"
     for kind, want in expected.items():
@@ -220,18 +226,23 @@ def main():
                        "WHERE daily_plan_id=%s AND cycle_no=4 AND round=1", (plan_id,))["c"]  # noqa: F841
         assert last == 3, "last cycle should hold 3 words"
 
-        drive_rounds(cli, "learn", plan_id, {"r1": 18, "r2": 18, "r3": 18})
-        batches = cli.call("/api/review-batches")["batches"]
-        assert len(batches) == 1 and batches[0]["stage"] == "memorized"
-        print("[5] R1-R3 done -> memorized (initial level)")
+        drive_rounds(cli, "learn", plan_id, {"r1": 18, "r2": 18, "r3": 18, "r4": 18, "r5": 18})
+        stats = cli.call("/api/review/stats")
+        assert stats["pool"] == 18, "学完 5 轮后 18 个词都应进入复习池"
+        print("[5] R1-R5 done -> memorized + 进复习池(18 词)")
 
-        drive_rounds(cli, "review", plan_id, {"r4": 18, "r5": 18})
-        batches = cli.call("/api/review-batches")["batches"]
-        assert batches[0]["stage"] == "mastered"
-        print("[6] R4-R5 done -> mastered (second level, stored separately)")
+        # 新学词的首次复习排期在 +1 天；测试里把到期日改成今天，模拟「明天到了」。
+        with transaction() as c:
+            execute(c, "UPDATE `progress` SET next_due_at=CURDATE() WHERE daily_plan_id=%s AND round=5", (plan_id,))
+        drive_rounds(cli, "review", plan_id, {"step1": 18, "step2": 18, "step3": 18})
+        with transaction() as c:
+            stages = one(c, "SELECT MIN(review_stage) AS mn, MAX(review_stage) AS mx "
+                            "FROM `progress` WHERE daily_plan_id=%s AND round=5", (plan_id,))
+        assert stages["mn"] == 1 and stages["mx"] == 1, "一轮复习三轮后 review_stage 应 0->1"
+        print("[6] 复习三轮(认识/听写/默写) -> review_stage 0->1, 下次到期 +2 天")
 
         ab = cli.call("/api/articles/batches")["batches"]
-        assert len(ab) == 1, "mastered batch must appear in the article list"
+        assert len(ab) == 1, "学完 5 轮的批次就该出现在短文列表里"
         first = cli.call(f"/api/articles/daily?plan_id={plan_id}")
         assert first["mode"] == "full" and len(first["articles"]) == 2
         a0 = first["articles"][0]

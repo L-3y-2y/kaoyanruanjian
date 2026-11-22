@@ -151,18 +151,18 @@ onMounted(async () => {
     <template v-else-if="!activePlanId">
       <section class="card">
         <h2>每日短文</h2>
-        <p class="muted">只有某个日期批次的 R1～R5 全部走完（真正学完）后才会出现短文；按批次永久保存，重复进入看到的是同一组。</p>
+        <p class="muted">学完当天批次的 5 轮后即可看短文；按批次永久保存，重复进入看到的是同一组。</p>
         <p class="muted small">选一个场景再点「阅读短文」，大模型会按这个场景写。已经生成过的批次不会重写。</p>
         <div class="scene-picker">
           <label v-for="s in scenes" :key="s.id">
             <input type="radio" :value="s.id" v-model="selectedScene" /> {{ s.label }}
           </label>
         </div>
-        <div v-if="!batches.length" class="empty">还没有真正学完的批次。先去复习板块把 R4 / R5 走完。</div>
+        <div v-if="!batches.length" class="empty">还没有学完 5 轮的批次。先去「学习」把新词学完。</div>
         <div class="batch" v-for="b in batches" :key="b.plan_id">
           <div>
             <strong>{{ b.study_date }}</strong>
-            <span class="stage mastered">真正学完</span>
+            <span class="stage mastered">已学完</span>
             <p class="muted small">{{ b.word_count }} 词 · {{ b.article_count ? '已生成 ' + b.article_count + ' 篇' : '尚未生成' }}</p>
           </div>
           <div class="batch-actions">

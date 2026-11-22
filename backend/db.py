@@ -134,6 +134,10 @@ def ensure_columns(cur):
         ("progress", "review_stage", "TINYINT NOT NULL DEFAULT 0"),
         ("progress", "last_review_at", "DATETIME NULL"),
         ("progress", "next_due_at", "DATE NULL"),
+        # review_round: 0 = no in-flight review sub-step; 1 = "认识" done
+        # (next: 听写), 2 = "听写" done (next: 默写). Reset to 0 after a full
+        # pass or a failure. Drives the three-step Ebbinghaus review.
+        ("progress", "review_round", "TINYINT NOT NULL DEFAULT 0"),
     ]
     for table, column, ddl in additions:
         meta = _column_meta(cur, table, column)

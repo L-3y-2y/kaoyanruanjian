@@ -42,7 +42,6 @@ from seed import ensure_words
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "frontend" / "dist"
 _scheduler_stop = threading.Event()
-SMART_REVIEW = os.getenv("SMART_REVIEW", "0") == "1"
 REVIEW_INTERVALS = (1, 2, 4, 7, 15, 30)
 
 
@@ -148,30 +147,48 @@ def require_mark_done(conn, progress_id):
         raise HTTPException(status_code=409, detail="这题已提交，请勿重复作答")
 
 
-def schedule_review(conn, progress_id, remembered=True):
-    """Optional spaced repetition. Off by default; never changes round/status."""
-    if not SMART_REVIEW:
-        return
-    fresh = one(conn, "SELECT wrong_count, review_stage FROM `progress` WHERE id=%s",
-                (progress_id,))
-    if not fresh:
-        return
-    stage = int(fresh["review_stage"] or 0)
-    if not remembered:
-        stage, days = 0, 1
-    else:
-        days = REVIEW_INTERVALS[min(stage, len(REVIEW_INTERVALS) - 1)]
-        if int(fresh["wrong_count"] or 0) > 0:
-            days = max(1, days // 2)
-        stage = min(stage + 1, len(REVIEW_INTERVALS) - 1)
+def review_fail(conn, p):
+    """A review sub-step failed: reset the word to day-1 and restart Ebbinghaus."""
     execute(
         conn,
         """UPDATE `progress`
-           SET review_stage=%s, last_review_at=NOW(),
-               next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY)
+           SET review_round=0, review_stage=0, wrong_count=wrong_count+1,
+               next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY),
+               last_review_at=NOW()
            WHERE id=%s""",
-        (stage, days, progress_id),
+        (REVIEW_INTERVALS[0], p["id"]),
     )
+
+
+def review_pass(conn, p):
+    """A full 3-sub-step review passed: advance to the next Ebbinghaus interval,
+    or mark mastered once every interval has been walked."""
+    new_stage = int(p["review_stage"] or 0) + 1
+    if new_stage >= len(REVIEW_INTERVALS):
+        execute(
+            conn,
+            """UPDATE `progress`
+               SET stage='mastered', review_round=0, review_stage=%s,
+                   next_due_at=NULL, last_review_at=NOW()
+               WHERE id=%s""",
+            (new_stage, p["id"]),
+        )
+        # Mirror the mastered flag onto every round row of this word.
+        execute(
+            conn,
+            "UPDATE `progress` SET stage='mastered' WHERE user_id=%s AND word_id=%s",
+            (p["user_id"], p["word_id"]),
+        )
+    else:
+        execute(
+            conn,
+            """UPDATE `progress`
+               SET review_round=0, review_stage=%s,
+                   next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY),
+                   last_review_at=NOW()
+               WHERE id=%s""",
+            (new_stage, REVIEW_INTERVALS[new_stage], p["id"]),
+        )
 
 
 def plan_totals(conn, uid, plan_id, min_round, max_round):
@@ -214,6 +231,26 @@ def item_payload(row, plan, counts, kind):
     return payload
 
 
+def review_item_payload(row):
+    """One due word for the Ebbinghaus review queue.
+
+    sub_step drives the UI: 1 = 认不认识, 2 = 听音默写, 3 = 汉译英默写.
+    review_round records how many sub-steps this word has already cleared
+    (0 = none yet, 1 = 认识 done, 2 = 听写 done).
+    """
+    return {
+        "kind": "review",
+        "progress_id": row["id"],
+        "sub_step": int(row["review_round"] or 0) + 1,
+        "review_stage": int(row["review_stage"] or 0),
+        "word": row["word"],
+        "phonetic": row["phonetic"],
+        "translation": row["translation"],
+        "pos": row["pos"],
+        "speak_text": row["word"],
+    }
+
+
 NEXT_ITEM_SQL = """
 SELECT p.id, p.round, p.cycle_no, w.word, w.phonetic, w.translation, w.pos,
        (SELECT COUNT(*) FROM `progress` g
@@ -227,25 +264,42 @@ ORDER BY p.cycle_no ASC, p.round ASC, p.id ASC
 LIMIT 1
 """
 
+# One due word across ALL date batches (Ebbinghaus review is word-level, not
+# batch-level). review_round < 3 means the word is mid-review or not yet started
+# this pass; ORDER BY review_round ASC yields the batch-by-sub-step flow
+# (all "认识" first, then all "听写", then all "默写").
+REVIEW_ITEM_SQL = """
+SELECT p.id, p.review_stage, p.review_round, w.word, w.phonetic,
+       w.translation, w.pos
+FROM `progress` p
+JOIN `word` w ON w.id = p.word_id
+WHERE p.user_id=%s AND p.round=5 AND p.status='done'
+  AND p.stage='memorized' AND p.next_due_at <= CURDATE()
+  AND p.review_round < 3
+ORDER BY p.review_round ASC, p.id ASC
+LIMIT 1
+"""
+
 
 def _learn_plan(conn, uid):
-    return one(
+    """Today's plan, preferring a still-in-progress ('learning') batch if one
+    exists (defensive against legacy same-day duplicate batches)."""
+    plan = one(
         conn,
-        "SELECT * FROM `daily_plan` WHERE user_id=%s AND study_date=CURDATE()",
+        """SELECT * FROM `daily_plan`
+           WHERE user_id=%s AND study_date=CURDATE() AND stage='learning'
+           ORDER BY id DESC LIMIT 1""",
         (uid,),
     )
-
-
-def _review_plan(conn, uid, plan_id):
-    if plan_id is None:
-        raise HTTPException(status_code=400, detail="复习模式需要 plan_id")
-    plan = one(conn, "SELECT * FROM `daily_plan` WHERE id=%s AND user_id=%s",
-               (plan_id, uid))
-    if not plan:
-        raise HTTPException(status_code=404, detail="找不到该日期批次")
-    if plan["memorized_at"] is None:
-        raise HTTPException(status_code=400, detail="该批次还没完成当天的 R1~R3")
-    return plan
+    if plan:
+        return plan
+    return one(
+        conn,
+        """SELECT * FROM `daily_plan`
+           WHERE user_id=%s AND study_date=CURDATE()
+           ORDER BY id DESC LIMIT 1""",
+        (uid,),
+    )
 
 
 def fetch_state(conn, uid, mode, plan_id=None):
@@ -254,36 +308,36 @@ def fetch_state(conn, uid, mode, plan_id=None):
         plan = _learn_plan(conn, uid)
         if not plan:
             return {"kind": "need_plan", "pool": pool_size(conn, uid)}
-        counts = plan_totals(conn, uid, plan["id"], 1, 3)
-        row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 1, 3))
+        counts = plan_totals(conn, uid, plan["id"], 1, 5)
+        row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 1, 5))
         if not row:
             return {"kind": "learning_done", "plan_id": plan["id"],
                     "word_count": plan["word_count"],
                     "stage": plan["stage"] or "memorized"}
         return item_payload(row, plan, counts, f"r{row['round']}")
 
-    plan = _review_plan(conn, uid, plan_id)
-    counts = plan_totals(conn, uid, plan["id"], 4, 5)
-    row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 4, 5))
+    # Ebbinghaus review: next due word across all batches. No plan_id needed —
+    # review is word-level (each word has its own due date), not batch-level.
+    row = one(conn, REVIEW_ITEM_SQL, (uid,))
     if not row:
-        return {"kind": "review_done", "plan_id": plan["id"],
-                "word_count": plan["word_count"], "stage": plan["stage"] or "mastered"}
-    return item_payload(row, plan, counts, f"r{row['round']}")
+        return {"kind": "review_empty"}
+    return review_item_payload(row)
 
 
 def advance_state(conn, uid, mode, plan_id=None):
     """Advance plan/stage transitions after a WRITE. Call only from write routes.
 
-    These were previously triggered as a side effect of GET /api/state, which
-    made a read-only request mutate data and hold a write lock. Now the exact
-    same transitions run inside POST /api/answer (and plan creation), where a
-    write is legitimate. Idempotent: guarded by explicit stage/status checks.
+    Learn mode: when all 5 rounds of today's plan are done, mark the batch
+    "memorized" and seed the Ebbinghaus review queue (each word's round=5 row
+    gets review_stage=0, review_round=0, next_due_at = today + first interval).
+    Review mode needs no advance here — its progress is written inline in the
+    answer route.
     """
     if mode == "learn":
         plan = _learn_plan(conn, uid)
         if not plan or plan["stage"] != "learning":
             return
-        if plan_totals(conn, uid, plan["id"], 1, 3)["done"] < plan["word_count"] * 3:
+        if plan_totals(conn, uid, plan["id"], 1, 5)["done"] < plan["word_count"] * 5:
             return
         execute(conn,
                 """UPDATE `daily_plan`
@@ -292,25 +346,15 @@ def advance_state(conn, uid, mode, plan_id=None):
         execute(conn,
                 "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s AND stage='none'",
                 (uid, plan["id"]))
+        execute(conn,
+                """UPDATE `progress`
+                   SET review_stage=0, review_round=0,
+                       next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY)
+                   WHERE user_id=%s AND daily_plan_id=%s AND round=5""",
+                (REVIEW_INTERVALS[0], uid, plan["id"]))
         return
 
-    plan = _review_plan(conn, uid, plan_id)
-    if plan["review_status"] == "not_started":
-        execute(conn,
-                """UPDATE `daily_plan` SET review_status='in_progress',
-                   last_review_at=NOW() WHERE id=%s AND review_status='not_started'""",
-                (plan["id"],))
-    if plan["stage"] == "mastered":
-        return
-    if plan_totals(conn, uid, plan["id"], 4, 5)["done"] < plan["word_count"] * 2:
-        return
-    execute(conn,
-            """UPDATE `daily_plan` SET stage='mastered',
-               mastered_at=NOW(), review_status='done' WHERE id=%s AND stage<>'mastered'""",
-            (plan["id"],))
-    execute(conn,
-            "UPDATE `progress` SET stage='mastered' WHERE user_id=%s AND daily_plan_id=%s AND stage<>'mastered'",
-            (uid, plan["id"]))
+    # review mode: nothing to advance here (handled in the answer route).
 
 
 # ---------------------------------------------------------------- models
@@ -326,8 +370,8 @@ class AnswerIn(BaseModel):
     assessment: str = ""
 
 
-class RestartIn(BaseModel):
-    plan_id: int
+class KnownIn(BaseModel):
+    progress_id: int
 
 
 class RevealIn(BaseModel):
@@ -424,8 +468,6 @@ def state(mode: str = "learn", plan_id: int | None = None,
           user=Depends(current_user)):
     if mode not in ("learn", "review"):
         raise HTTPException(status_code=400, detail="mode 只能是 learn 或 review")
-    if mode == "review" and plan_id is None:
-        raise HTTPException(status_code=400, detail="复习模式需要 plan_id")
     with transaction() as conn:
         return fetch_state(conn, user["id"], mode, plan_id)
 
@@ -486,6 +528,122 @@ def create_plan(req: PlanIn, user=Depends(current_user)):
         }
 
 
+def _answer_learn(conn, uid, p, req):
+    """Handle a learning answer (rounds 1-5, status='pending')."""
+    result = {
+        "duplicate": False, "correct": None, "answer": None,
+        "reveal": False, "standard_answer": None, "state": None,
+    }
+    r, action = p["round"], req.action
+    if r == 1 and action == "unknown":
+        execute(conn,
+                "UPDATE `progress` SET wrong_count=wrong_count+1 WHERE id=%s AND status='pending'",
+                (p["id"],))
+        log_answer(conn, uid, p, "unknown")
+        result["reveal"] = True
+        return result
+
+    if r == 1 and action == "known":
+        require_mark_done(conn, p["id"])
+        log_answer(conn, uid, p, "known", correct=1)
+        result["correct"] = True
+
+    elif r in (2, 3, 5) and action == "spell":
+        if norm(req.value) == norm(p["spelling"]):
+            require_mark_done(conn, p["id"])
+            log_answer(conn, uid, p, "spell", value=req.value, correct=1)
+            result["correct"] = True
+        else:
+            execute(conn,
+                    "UPDATE `progress` SET wrong_count=wrong_count+1 WHERE id=%s AND status='pending'",
+                    (p["id"],))
+            log_answer(conn, uid, p, "spell", value=req.value, correct=0)
+            result["correct"] = False
+            result["answer"] = p["spelling"]
+            return result
+
+    elif r == 4 and action == "r4_reveal":
+        log_answer(conn, uid, p, "r4_reveal", value=req.value)
+        result["standard_answer"] = p["meaning"]
+        return result
+
+    elif r == 4 and action == "self_assess":
+        if req.assessment not in ("remembered", "forgotten"):
+            raise HTTPException(status_code=400, detail="请选择记住了或没记住")
+        require_mark_done(conn, p["id"])
+        log_answer(conn, uid, p, "self_assess", value=req.value,
+                   assessment=req.assessment)
+        result["correct"] = None
+
+    else:
+        raise HTTPException(status_code=400, detail="action 与当前轮次不匹配")
+
+    advance_state(conn, uid, "learn", p["daily_plan_id"])
+    result["state"] = fetch_state(conn, uid, "learn")
+    return result
+
+
+def _answer_review(conn, uid, p, req):
+    """Handle an Ebbinghaus review answer (round=5, stage='memorized').
+
+    Three sub-steps, driven by review_round:
+      0 -> 认识 (r_known / r_unknown)
+      1 -> 听写 (r_spell)
+      2 -> 默写 (r_spell); a correct 默写 completes the pass.
+    """
+    result = {
+        "duplicate": False, "correct": None, "answer": None,
+        "reveal": False, "standard_answer": None, "state": None,
+        "passed": False, "mastered": False,
+    }
+    rr = int(p["review_round"] or 0)
+    action = req.action
+    if rr == 0:
+        if action == "r_known":
+            execute(conn,
+                    "UPDATE `progress` SET review_round=1, last_review_at=NOW() WHERE id=%s",
+                    (p["id"],))
+            log_answer(conn, uid, p, "review_known", correct=1)
+            result["correct"] = True
+        elif action == "r_unknown":
+            review_fail(conn, p)
+            log_answer(conn, uid, p, "review_unknown", correct=0)
+            result["correct"] = False
+            result["reveal"] = True
+        else:
+            raise HTTPException(status_code=400, detail="请选择认识或不认识")
+    elif rr == 1:
+        if action != "r_spell":
+            raise HTTPException(status_code=400, detail="请默写这个单词")
+        if norm(req.value) == norm(p["spelling"]):
+            execute(conn,
+                    "UPDATE `progress` SET review_round=2 WHERE id=%s", (p["id"],))
+            log_answer(conn, uid, p, "review_spell", value=req.value, correct=1)
+            result["correct"] = True
+        else:
+            review_fail(conn, p)
+            log_answer(conn, uid, p, "review_spell", value=req.value, correct=0)
+            result["correct"] = False
+            result["answer"] = p["spelling"]
+    elif rr == 2:
+        if action != "r_spell":
+            raise HTTPException(status_code=400, detail="请默写这个单词")
+        if norm(req.value) == norm(p["spelling"]):
+            review_pass(conn, p)
+            log_answer(conn, uid, p, "review_spell", value=req.value, correct=1)
+            result["correct"] = True
+            result["passed"] = True
+        else:
+            review_fail(conn, p)
+            log_answer(conn, uid, p, "review_spell", value=req.value, correct=0)
+            result["correct"] = False
+            result["answer"] = p["spelling"]
+    else:
+        raise HTTPException(status_code=400, detail="复习状态异常")
+    result["state"] = fetch_state(conn, uid, "review")
+    return result
+
+
 @app.post("/api/answer")
 def answer(req: AnswerIn, user=Depends(current_user)):
     uid = user["id"]
@@ -499,147 +657,65 @@ def answer(req: AnswerIn, user=Depends(current_user)):
         )
         if not p:
             raise HTTPException(status_code=404, detail="找不到该题目")
-        mode = "learn" if p["round"] <= 3 else "review"
-        plan_id = p["daily_plan_id"]
+        if p["status"] == "pending":
+            # Still learning: rounds 1-5 not all finished yet.
+            return _answer_learn(conn, uid, p, req)
+        if p["round"] == 5 and p["stage"] == "memorized":
+            # Finished learning -> now in the Ebbinghaus review queue.
+            return _answer_review(conn, uid, p, req)
+        # status='done' but neither a review word nor a pending learning word:
+        # a duplicate submit of an already-completed learning step.
         result = {
-            "duplicate": False, "correct": None, "answer": None,
+            "duplicate": True, "correct": None, "answer": None,
             "reveal": False, "standard_answer": None, "state": None,
         }
-        if p["status"] == "done":
-            result["duplicate"] = True
-            result["state"] = fetch_state(conn, uid, mode, plan_id)
-            return result
-
-        r, action = p["round"], req.action
-        if r == 1 and action == "unknown":
-            execute(conn,
-                    "UPDATE `progress` SET wrong_count=wrong_count+1 WHERE id=%s AND status='pending'",
-                    (p["id"],))
-            log_answer(conn, uid, p, "unknown")
-            result["reveal"] = True
-            return result
-
-        if r == 1 and action == "known":
-            require_mark_done(conn, p["id"])
-            log_answer(conn, uid, p, "known", correct=1)
-            result["correct"] = True
-
-        elif r in (2, 3, 5) and action == "spell":
-            if norm(req.value) == norm(p["spelling"]):
-                require_mark_done(conn, p["id"])
-                log_answer(conn, uid, p, "spell", value=req.value, correct=1)
-                schedule_review(conn, p["id"], remembered=True)
-                result["correct"] = True
-            else:
-                execute(conn,
-                        "UPDATE `progress` SET wrong_count=wrong_count+1 WHERE id=%s AND status='pending'",
-                        (p["id"],))
-                log_answer(conn, uid, p, "spell", value=req.value, correct=0)
-                result["correct"] = False
-                result["answer"] = p["spelling"]
-                return result
-
-        elif r == 4 and action == "r4_reveal":
-            log_answer(conn, uid, p, "r4_reveal", value=req.value)
-            result["standard_answer"] = p["meaning"]
-            return result
-
-        elif r == 4 and action == "self_assess":
-            if req.assessment not in ("remembered", "forgotten"):
-                raise HTTPException(status_code=400, detail="请选择记住了或没记住")
-            require_mark_done(conn, p["id"])
-            log_answer(conn, uid, p, "self_assess", value=req.value,
-                       assessment=req.assessment)
-            schedule_review(conn, p["id"], remembered=(req.assessment == "remembered"))
-            result["correct"] = None
-
-        else:
-            raise HTTPException(status_code=400, detail="action 与当前轮次不匹配")
-
-        # State transitions (memorized / mastered) used to happen as a side
-        # effect of GET /api/state. They now run here, inside the write that
-        # completed the last item — a read-only GET never mutates data.
-        advance_state(conn, uid, mode, plan_id)
-        result["state"] = fetch_state(conn, uid, mode, plan_id)
+        result["state"] = fetch_state(conn, uid, "learn")
         return result
 
 
-@app.get("/api/review/due")
-def review_due(user=Depends(current_user)):
-    """Optional spaced-repetition queue. Default off; no reminders are pushed."""
-    if not SMART_REVIEW:
-        return {"enabled": False, "words": []}
-    with transaction() as conn:
-        rows = query(
-            conn,
-            """SELECT p.id AS progress_id, p.daily_plan_id, p.review_stage,
-                      p.next_due_at, w.word, w.translation, w.pos, dp.study_date
-               FROM `progress` p
-               JOIN `word` w ON w.id=p.word_id
-               JOIN `daily_plan` dp ON dp.id=p.daily_plan_id
-               WHERE p.user_id=%s AND p.round>=4 AND p.status='done'
-                 AND p.next_due_at IS NOT NULL AND p.next_due_at<=CURDATE()
-               ORDER BY p.next_due_at ASC, w.id ASC LIMIT 50""",
-            (user["id"],),
-        )
-        for row in rows:
-            for key in ("next_due_at", "study_date"):
-                if row[key] is not None:
-                    row[key] = str(row[key])
-        return {"enabled": True, "words": rows}
-
-
-@app.get("/api/review-batches")
-def review_batches(user=Depends(current_user)):
+@app.get("/api/review/stats")
+def review_stats(user=Depends(current_user)):
+    """Ebbinghaus review stats: due-now / in-pool / mastered counts."""
     uid = user["id"]
     with transaction() as conn:
-        rows = query(
+        due = one(
             conn,
-            """SELECT dp.id AS plan_id, dp.study_date, dp.word_count, dp.stage,
-                      dp.memorized_at, dp.mastered_at, dp.review_status,
-                      (SELECT COUNT(*) FROM `progress` p
-                        WHERE p.daily_plan_id=dp.id AND p.round>=4
-                          AND p.status='done') AS done,
-                      (SELECT COUNT(*) FROM `progress` p
-                        WHERE p.daily_plan_id=dp.id AND p.round>=4) AS total
-               FROM `daily_plan` dp
-               WHERE dp.user_id=%s AND dp.memorized_at IS NOT NULL
-               ORDER BY dp.study_date ASC, dp.id ASC""",
+            """SELECT COUNT(*) AS c FROM `progress`
+               WHERE user_id=%s AND round=5 AND status='done'
+                 AND stage='memorized' AND next_due_at <= CURDATE()""",
             (uid,),
-        )
-        for row in rows:
-            row["study_date"] = str(row["study_date"])
-            for key in ("memorized_at", "mastered_at"):
-                if row[key] is not None:
-                    row[key] = str(row[key])
-        return {"batches": rows}
+        )["c"]
+        pool = one(
+            conn,
+            """SELECT COUNT(*) AS c FROM `progress`
+               WHERE user_id=%s AND round=5 AND status='done' AND stage='memorized'""",
+            (uid,),
+        )["c"]
+        mastered = one(
+            conn,
+            """SELECT COUNT(DISTINCT word_id) AS c FROM `progress`
+               WHERE user_id=%s AND stage='mastered'""",
+            (uid,),
+        )["c"]
+        return {"due": int(due), "pool": int(pool), "mastered": int(mastered)}
 
 
-@app.post("/api/review/restart")
-def restart_review(req: RestartIn, user=Depends(current_user)):
+@app.post("/api/word/known")
+def mark_known(req: KnownIn, user=Depends(current_user)):
+    """「熟知」button: mark a word as already known — skip learning and review."""
     uid = user["id"]
     with transaction() as conn:
-        plan = one(conn,
-                   "SELECT * FROM `daily_plan` WHERE id=%s AND user_id=%s",
-                   (req.plan_id, uid))
-        if not plan:
-            raise HTTPException(status_code=404, detail="找不到该日期批次")
-        execute(
-            conn,
-            """UPDATE `progress` SET status='pending', wrong_count=0
-               WHERE user_id=%s AND daily_plan_id=%s AND round>=4""",
-            (uid, req.plan_id),
-        )
-        execute(
-            conn,
-            """UPDATE `daily_plan` SET stage='memorized', mastered_at=NULL,
-               review_status='in_progress' WHERE id=%s""", (req.plan_id,),
-        )
+        p = one(conn, "SELECT word_id FROM `progress` WHERE id=%s AND user_id=%s",
+                (req.progress_id, uid))
+        if not p:
+            raise HTTPException(status_code=404, detail="找不到该单词")
         execute(conn,
-                "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s",
-                (uid, req.plan_id))
-        return {"ok": True, "plan_id": req.plan_id,
-                "state": fetch_state(conn, uid, "review", req.plan_id)}
+                "UPDATE `progress` SET status='done', stage='mastered' WHERE user_id=%s AND word_id=%s",
+                (uid, p["word_id"]))
+        execute(conn,
+                "UPDATE `progress` SET review_round=0, review_stage=0, next_due_at=NULL WHERE user_id=%s AND word_id=%s",
+                (uid, p["word_id"]))
+        return {"ok": True}
 
 
 # ---------------------------------------------------------------- daily articles

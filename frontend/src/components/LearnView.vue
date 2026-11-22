@@ -12,6 +12,8 @@ const countN = ref(10)
 const input = ref('')
 const shownAnswer = ref('')
 const revealed = ref(false)
+const r4Phase = ref('write')
+const standardAnswer = ref('')
 
 const progressPct = computed(() => {
   const s = state.value
@@ -23,6 +25,8 @@ function resetTransient() {
   input.value = ''
   shownAnswer.value = ''
   revealed.value = false
+  r4Phase.value = 'write'
+  standardAnswer.value = ''
 }
 function onInput() {
   if (shownAnswer.value) shownAnswer.value = ''
@@ -71,8 +75,31 @@ async function submit(payload) {
       body: JSON.stringify({ progress_id: state.value.progress_id, ...payload })
     })
     if (r.reveal) { revealed.value = true; return }
+    if (r.standard_answer != null) {
+      standardAnswer.value = r.standard_answer
+      r4Phase.value = 'assess'
+      return
+    }
     if (r.correct === false) { shownAnswer.value = r.answer; input.value = ''; return }
     if (r.state) { state.value = r.state; resetTransient() }
+    await loadPool()
+    onChanged()
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
+}
+
+// 「熟知」：这个词我已经会了，直接标记背熟，跳过学习和复习。
+async function markKnown() {
+  if (busy.value || !state.value?.progress_id) return
+  busy.value = true
+  error.value = ''
+  try {
+    await api('/api/word/known', {
+      method: 'POST',
+      body: JSON.stringify({ progress_id: state.value.progress_id })
+    })
+    state.value = await api('/api/state?mode=learn')
+    resetTransient()
     await loadPool()
     onChanged()
   } catch (e) { error.value = e.message }
@@ -101,16 +128,20 @@ onMounted(refresh)
     </section>
 
     <section v-else-if="state?.kind === 'learning_done'" class="card done">
-      <h2>今天的 {{ state.word_count }} 个词已背下（初步）</h2>
-      <p>R1～R3 全部走完，这个日期批次已永久保存在<strong>复习板块</strong>。</p>
-      <p class="muted">走完 R4～R5 才会升级为「真正学完」，届时每日短文才会出现。</p>
-      <button class="primary" @click="goTab('review')">去复习板块</button>
+      <h2>今天的 {{ state.word_count }} 个词已学完</h2>
+      <p>5 轮全部走完，已进入复习池，之后会按遗忘曲线（1/2/4/7/15/30 天）自动安排复习。</p>
+      <p class="muted">现在就可以看今天的短文了。</p>
+      <div class="actions">
+        <button class="primary" @click="goTab('articles')">去看每日短文</button>
+        <button class="ghost" @click="goTab('review')">去复习板块</button>
+      </div>
     </section>
 
     <section v-else-if="state?.kind?.startsWith('r')" class="card quiz">
       <div class="quiz-head">
         <span class="round">{{ currentRound }}</span>
         <span class="muted">第 {{ state.cycle_no }} / {{ state.cycle_count }} 组（本组 {{ state.cycle_size }} 词）</span>
+        <button class="known-btn" :disabled="busy" @click="markKnown">熟知 · 跳过</button>
       </div>
       <div class="bar"><div :style="{ width: progressPct + '%' }"></div></div>
       <p class="muted small">已完成 {{ state.done }} / {{ state.total }}</p>
@@ -146,7 +177,36 @@ onMounted(refresh)
                autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="默写英文单词" />
         <div class="actions"><button class="primary" :disabled="busy" @click="submit({ action: 'spell', value: input })">提交</button></div>
         <p class="answer" v-if="shownAnswer">正确单词：{{ shownAnswer }}</p>
-        <p class="hint">写完本组最后一个词的 R3，会回到 R1 开始下一个 5 词小周期。</p>
+      </template>
+
+      <template v-else-if="state.kind === 'r4'">
+        <p class="prompt">看英文，写汉语意思</p>
+        <div class="word-big">{{ state.word }}</div>
+        <template v-if="r4Phase === 'write'">
+          <input v-model="input" @keyup.enter="submit({ action: 'r4_reveal', value: input })"
+                 placeholder="写出你理解的汉语意思" />
+          <div class="actions">
+            <button class="primary" :disabled="busy" @click="submit({ action: 'r4_reveal', value: input })">写完，看标准答案</button>
+          </div>
+        </template>
+        <template v-else>
+          <p class="answer">标准答案：{{ standardAnswer }}</p>
+          <p class="prompt">自己评一下记住了没有</p>
+          <div class="actions">
+            <button class="primary" :disabled="busy" @click="submit({ action: 'self_assess', value: input, assessment: 'remembered' })">记住了</button>
+            <button :disabled="busy" @click="submit({ action: 'self_assess', value: input, assessment: 'forgotten' })">没记住</button>
+          </div>
+          <p class="hint">「没记住」只做标记与统计，不会让你重填，也不改变本批次流程。</p>
+        </template>
+      </template>
+
+      <template v-else-if="state.kind === 'r5'">
+        <p class="prompt">看汉语，默写英文</p>
+        <div class="word-cn">{{ state.translation }} <small>{{ state.pos || '' }}</small></div>
+        <input v-model="input" @input="onInput" @keyup.enter="submit({ action: 'spell', value: input })"
+               autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="默写英文单词" />
+        <div class="actions"><button class="primary" :disabled="busy" @click="submit({ action: 'spell', value: input })">提交</button></div>
+        <p class="answer" v-if="shownAnswer">正确答案：{{ shownAnswer }}</p>
       </template>
     </section>
   </main>

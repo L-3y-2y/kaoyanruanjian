@@ -7,7 +7,7 @@ export const store = reactive({
   me: null,                 // 当前登录用户（含 is_admin / local 字段），null = 未登录
   health: null,             // /api/health 结果（词库数、模型、数据库名）
   pool: null,               // 未掌握词池 { available, total }
-  batchesCount: 0,          // 复习批次数量（导航角标）
+  batchesCount: 0,          // 今日到期复习词数（导航角标）
   modelInfo: { configured: false, current: '', models: [] },
   theme: 'light',
   activeTab: 'learn',       // 当前主视图：learn/review/articles/reading/wordbank/admin
@@ -45,8 +45,8 @@ export async function refreshHeader() {
   try {
     store.health = await api('/api/health')
     store.pool = await api('/api/pool')
-    const r = await api('/api/review-batches')
-    store.batchesCount = r.batches.length
+    const r = await api('/api/review/stats')
+    store.batchesCount = r.due
   } catch (e) {
     store.error = e.message
   }
