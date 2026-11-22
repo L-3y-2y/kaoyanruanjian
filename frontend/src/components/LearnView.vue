@@ -1,9 +1,7 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, playWord, roundName } from '../api.js'
-
-const onChanged = inject('onChanged', () => {})
-const goTab = inject('goTab', () => {})
+import { refreshHeader as onChanged, goTab } from '../store.js'
 
 const pool = ref(null)
 const state = ref(null)

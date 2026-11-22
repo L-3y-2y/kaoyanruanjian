@@ -1,8 +1,7 @@
 <script setup>
-import { inject, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { api } from '../api.js'
-
-const openChat = inject('openChat', () => {})
+import { openChat } from '../store.js'
 
 const weeks = ref([])
 const weekKey = ref('')

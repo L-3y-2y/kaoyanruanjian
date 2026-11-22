@@ -1,8 +1,7 @@
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { api, playWord } from '../api.js'
-
-const openChat = inject('openChat', () => {})
+import { openChat } from '../store.js'
 
 const batches = ref([])
 const scenes = ref([])
