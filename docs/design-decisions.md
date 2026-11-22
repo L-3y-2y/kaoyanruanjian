@@ -10,7 +10,7 @@
 | 0 / 5.0 | 环境准备：MySQL 8.0、`utf8mb4`、单库 `kaoyanruanjian`、`kaoyan_app` 单库授权、干净连接、`.env`、`.gitignore` | ✅ 已完成（在旧会话中） |
 | 1 | R1→R2→R3 状态机、`speechSynthesis` 发音、进度不靠下标 | ✅ |
 | 2 | FastAPI + MySQL、进度持久化、事务、接口契约、中文不乱码 | ✅ |
-| 3 | 词库、每天选 N、5 词小周期、日期批次复习 R4 自评 / R5 | ✅ |
+| 3 | 词库、每天自选 N（滑轴 1～100）、5 词小周期、学习 R1～R5 一次学完 | ✅ |
 | 4 | 注册登录、密码哈希、多用户隔离、管理员词库维护 | ✅ |
 | 5 | 每日短文、每周阅读、AI 判分、周五晚定时 | ✅ |
 
@@ -25,7 +25,7 @@
 | `user_session` | 会话 token、过期时间、`is_admin` |
 | `word` | 词库（`word` 唯一索引、`source` / `verified`、`exchange` 供词形还原） |
 | `daily_plan` | 每日计划 = **日期批次本身**，不另加表 |
-| `progress` | 每词每轮一条，含 `cycle_no` / `round` / `status` / `wrong_count` / `stage` |
+| `progress` | 每词每轮一条，含 `cycle_no` / `round` / `status` / `wrong_count` / `stage` / `review_round` / `review_stage` / `next_due_at` |
 | `answer_log` | 学习答题 + 阅读答卷共用；`kind='word'|'exam'`，含 `score` / `scored` / `is_late` / `ai_result` / `question_id` / `week_key` |
 | `article` | 每日短文 / 周阅读共用；`revealed` / `mode` / `uncovered` / `publish_at` / `deadline` / `generator` |
 | `article_word` | 文章-词关联 + **当时的释义快照** |
@@ -38,11 +38,10 @@
 ## 3. 进度模型
 
 - 一个词在一个用户下的 **round 1～5 各一条记录**，唯一键 `(user_id, word_id, round)`；建计划时一次性插好，全部 `pending`。
-- 学习态只查 `round <= 3`，复习态只查 `round >= 4`，因此两个阶段天然不会互相串轮次。
+- 学习态查 `status='pending'`（R1～R5 未走完），复习态查 `round=5 AND stage='memorized'` 且 `next_due_at` 到期，两个阶段天然不会串轮次。
 - 「未掌握池」= `word` 中**从未出现在 `progress` 里的词**。进过任一批次的词不再被选，保证「同一个词不会落在两个日期组」。
-- `daily_plan` 存两个独立时间戳：`memorized_at`（R1～R3 完成）与 `mastered_at`（R4～R5 完成）。**两级状态分开存、分别可查**，不是用一个布尔值糊过去；`stage` 只是它俩派生出的展示值。
-- 一个日期批次 R1～R3 全完成时写 `memorized_at`；R4～R5 全完成时写 `mastered_at`。批次行**永久保留**在复习板块，可回看、可重做。
-- 重做会把该批次 round 4/5 重置为 `pending` 并清空 `mastered_at`，不触碰其它批次。
+- `daily_plan` 存两个独立时间戳：`memorized_at`（学完 5 轮）与 `mastered_at`（复习背熟）。**两级状态分开存、分别可查**，不是用一个布尔值糊过去；`stage` 只是它俩派生出的展示值。
+- 一个日期批次 R1～R5 全完成时写 `memorized_at` 并进复习池；该词 6 个艾宾浩斯间隔全走完时写 `mastered_at`（背熟）。
 
 ## 4. 取词顺序：按小周期循环
 
@@ -142,7 +141,7 @@ R4 的汉语释义**不机器判分**：需求定的是「写完显示标准答�
 
 ## 17. 每日短文：全放 / 抽词 / 揭示
 
-- 只在 `daily_plan.stage='mastered'` 后出现；`GET /api/articles/daily` 先查已有行，有就直接返回，**按钮和接口都不重新生成**。
+- 只在 `daily_plan.stage IN ('memorized','mastered')`（学完 5 轮）后出现；`GET /api/articles/daily` 先查已有行，有就直接返回，**按钮和接口都不重新生成**。
 - 每篇 12 词、最多 3 篇，容量 36 词。N≤36 → `mode='full'`；N>36 → `mode='sample'`，按 `wrong_count` 降序优先错得多的词，并用 `user.sample_cursor` 轮转起点，保证长期每个词都轮得到；`uncovered[]` 明确列出未收录词，`summary` 用文档 4.1 的措辞告知。
 - **首次渲染纯文本**：`revealed=false` 时接口连 `segments` 都不返回（`null`），前端只输出 `{{ body }}`，无任何可点元素，目标词外观与其它词完全一致（A4）。
 - 底部按钮「显示今日词」→ 按 `article_word` 把目标词包成 `segments`，点词显示**生成时存下的释义快照**（A3 / A6 / A7）。**揭示改为每次视图手动触发，不再 `UPDATE revealed` 落盘**：`article_payload` 恒返回 `revealed=false / segments=null`，刷新后回到纯文本，可再点按钮重新显示。释义快照常驻 `article_word`，三个月前点开仍是当时的意思（2026-11-20 按用户反馈调整：原来一点就永久高亮，用户要的是每次手动点亮）。
@@ -178,5 +177,15 @@ R4 的汉语释义**不机器判分**：需求定的是「写完显示标准答�
 - 生成链：主源改推荐智谱 `glm-4-flash`（永久免费、国内直连），Agnes 作兜底；JSON 输出 + 词形还原覆盖率校验 + 漏词重写一次；周阅读题目由模型按正文一次生成，模板只作兜底；主观题判分带缓存。
 - 场景化：`article.scene` 字段记录生成时的场景，已生成文章不重写，保持幂等。
 - 语境完形：直接用 `article_word` 的释义快照在前端拼题，不新增表、不写 `progress`。
-- 间隔复习：`SMART_REVIEW=1` 才写 `progress.review_stage / last_review_at / next_due_at`；默认 0 时接口返回空，界面不出现卡片，严格保持原需求「复习不设定时、不做到期提醒」。
+- 间隔复习：已由「可选增强」重构为内置的艾宾浩斯复习（见第 23 节）。
 - 模型切换：界面只下发服务端 `LLM_MODEL_PRESETS` 白名单里的模型名，**Key 与 base_url 永不下发到浏览器**（守住 `llm.py` 的安全边界）。切换同时做三件事——改 `os.environ`（`_slot()` 每次调用都读，故下次生成立即生效、无需重启）、清判分缓存（换模型后旧缓存失效）、把 `LLM_MODEL=` 行写回 `.env`（重启后保持）。写回用逐行替换且加线程锁，Key 行与其他配置原样保留。另加 `POST /api/llm/test` 真发一句极简请求，把 HTTP 429 等真实错误直接显示出来，修掉「状态条显示已接、实际限流却静默回退」的误导。自检 `[12a]` 验证切换→探测→恢复闭环，跑完必恢复原模型。
+
+## 23. 学习 / 复习重构（2026-11-22）
+
+按用户拍板，把「学习」和「复习」彻底分开：
+
+- **学习**：R1 认词 → R2 听音默写 → R3 看义默写 → R4 看词写义 → R5 看义默写，五轮在「学习」视图一次学完；走完即 `stage=memorized` 进复习池，并解锁每日短文（不再卡 mastered）。
+- **复习**：真正的艾宾浩斯遗忘曲线，词级调度，间隔 1/2/4/7/15/30 天；每次复习走三轮（认不认识 → 听音默写 → 汉译英默写），三轮过 → `review_stage+1`，6 个间隔全过 → `mastered`；不认识/拼错 → 间隔归零、明天再来。
+- **熟知按钮**：`POST /api/word/known` 一键把该词标背熟，跳过学习和复习。
+- **数据**：`progress` 新增 `review_round`（当前间隔内子步 0/1/2）；删除旧的批次级复习接口（`/api/review-batches`、`/api/review/restart`、`/api/review/due`、`SMART_REVIEW`），新增 `/api/review/stats`。
+- **迁移**：`scripts/migrate_ebbinghaus.py` 把历史批次未学完的词补齐进复习池，mastered 词保持。

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api, playWord, roundName } from '../api.js'
 import { refreshHeader as onChanged, goTab } from '../store.js'
 
@@ -20,6 +20,13 @@ const progressPct = computed(() => {
   return s && s.total ? Math.round((s.done / s.total) * 100) : 0
 })
 const currentRound = computed(() => roundName[state.value?.kind] || '')
+
+// 学习数量滑轴：1～100，上限不超过「未掌握池」剩余词数。
+const maxN = computed(() => {
+  const avail = pool.value?.available
+  return Math.max(1, Math.min(100, avail ?? 100))
+})
+watch(maxN, (m) => { if (countN.value > m) countN.value = m })
 
 function resetTransient() {
   input.value = ''
@@ -116,14 +123,16 @@ onMounted(refresh)
 
     <section v-if="state?.kind === 'need_plan'" class="card">
       <h2>今天要背多少个词？</h2>
-      <p class="muted">每 5 个词一个小周期，最后一组不足 5 个也没关系。新词只从「未掌握池」取，不会和以前的日期批次重复。</p>
-      <div class="plan-row">
-        <input type="number" min="1" max="200" v-model.number="countN" />
+      <p class="muted">拖动滑轴选择数量，1～100 个任选。新词只从「未掌握池」取，不会和以前的日期批次重复。</p>
+      <div class="range-box">
+        <div class="range-value"><strong>{{ countN }}</strong> <span>词</span></div>
+        <input type="range" class="range" min="1" :max="maxN" v-model.number="countN" />
+        <div class="range-ends"><span>1</span><span>{{ maxN }}</span></div>
+      </div>
+      <div class="actions">
         <button class="primary" :disabled="busy || !pool?.available" @click="createPlan">开始今天的学习</button>
       </div>
-      <div class="quick">
-        <button v-for="n in [5, 10, 18, 20, 30]" :key="n" @click="countN = n">{{ n }} 词</button>
-      </div>
+      <p class="hint" v-if="pool?.available && pool.available < 100">未掌握池还剩 {{ pool.available }} 个新词，滑轴上限定在这里。</p>
       <p class="hint" v-if="!pool?.available">词库里没有可学的新词了，请联系管理员导入更多考研词。</p>
     </section>
 
@@ -211,3 +220,48 @@ onMounted(refresh)
     </section>
   </main>
 </template>
+
+<style scoped>
+.range-box { margin-top: 20px; }
+.range-value { text-align: center; font-size: 15px; color: var(--muted); }
+.range-value strong { font-size: 44px; font-weight: 800; color: var(--ink); margin-right: 6px; }
+.range-value span { color: var(--muted); }
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 6px;
+  background: var(--line-strong);
+  border: none;
+  padding: 0;
+  margin: 18px 0 8px;
+  cursor: pointer;
+}
+.range:focus { box-shadow: none; border: none; }
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary-grad);
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(79, 94, 240, .35);
+  cursor: grab;
+}
+.range::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid #fff;
+  cursor: grab;
+}
+.range-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+</style>

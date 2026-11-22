@@ -51,22 +51,22 @@
 | `r1` | R1 认词 | `progress_id, word, phonetic, translation, pos, cycle_no, round, cycle_size, group_index, done, total` |
 | `r2` | R2 听写 | 同上，`speak_text`（供前端发音） |
 | `r3` | R3 默写 | 同上，`translation` 为题干、`speak_text` 供发音 |
-| `learning_done` | 当天 N 个词 R1～R3 全走完 | `plan_id, word_count, stage:"memorized"` |
+| `learning_done` | 当天 N 个词 R1～R5 全走完 | `plan_id, word_count, stage:"memorized"` |
 
 > R1 接口会返回 `translation`，但**前端只在用户点「陌生」后才展开显示**；服务端不控制这个视觉状态（它属于界面呈现，不是学习进度）。
-> R2 / R3 的 `speak_text` 就是单词拼写本身，浏览器发音需要它；答案判定仍由服务端做。
+> R2 / R3 / R5 的 `speak_text` 就是单词拼写本身，浏览器发音需要它；答案判定仍由服务端做。
 
-## GET /api/state?mode=review&plan_id=<id>
+## GET /api/state?mode=review
 
-取某个日期批次里 R4 / R5 的下一题。
+取「今天到期」的下一个待复习词（词级，跨所有日期批次）。
 
 | 返回 `kind` | 含义 | 主要字段 |
 | --- | --- | --- |
-| `r4` | R4 英→中 | `progress_id, word, cycle_no, round, done, total` |
-| `r5` | R5 中→英 | `progress_id, translation, pos, done, total` |
-| `review_done` | 该批次 R4 / R5 全走完 | `plan_id, stage:"mastered"` |
+| `review` | 下一个到期词，含当前复习子步 | `progress_id, word, translation, pos, speak_text, review_round(0/1/2), review_stage` |
+| `review_done` | 今天到期的词都复习完了 | `due, mastered` |
 
-`plan_id` 不存在、或不属于 `user_id=1` → 404。
+- `review_round`：0 = 认不认识；1 = 听音默写；2 = 汉译英默写（答对即本轮通过，间隔 +1）
+- 到期判定：`stage='memorized' AND next_due_at <= CURDATE()`
 
 ## POST /api/plan
 
@@ -76,7 +76,7 @@
 { "count": 18 }
 ```
 
-- `count` 必须是 1～200 的整数，且 `count <= /api/pool 的 available`
+- `count` 必须是 1～200 的整数（前端学习页滑轴 1～100），且 `count <= /api/pool 的 available`
 - 从未掌握池按 `word.id` 升序取 N 个新词；每 5 个一组切小周期，`cycle_no` 从 1 开始，最后一组允许不足 5 个
 - 事务内写 `daily_plan` 一行 + 每个词 5 条 `progress`（round 1～5 全部 `pending`）
 - 成功：`{ "plan_id": 3, "study_date": "2026-11-06", "word_count": 18, "cycle_count": 4 }`
@@ -89,7 +89,7 @@
 ```json
 {
   "progress_id": 123,
-  "action": "known | unknown | spell | r4_reveal | self_assess",
+  "action": "known | unknown | spell | r4_reveal | self_assess | r_known | r_unknown | r_spell",
   "value": "用户输入的文本（spell / r4_reveal / self_assess 时）",
   "assessment": "remembered | forgotten（仅 self_assess）"
 }
@@ -102,6 +102,9 @@
 | `spell` | R2 / R3 / R5 | 归一化后比对 `word.word`；对 → `done`；错 → `wrong_count+1` + 写 log，返回 `correct:false, answer:"正确单词"` |
 | `r4_reveal` | R4 | 只记录用户写的释义 + 返回 `standard_answer`（词库主释义），**不改进度** |
 | `self_assess` | R4 | 结合 `assessment` 写 log 并把 `status=done`；「没记住」只做标记与统计，**不改变本批次流程** |
+| `r_known` | 复习·认识 | 认识 → 复习子步 +1，进入下一步 |
+| `r_unknown` | 复习·不认识 | 间隔归零、`next_due_at` = 明天；返回 `reveal:true` 显示释义 |
+| `r_spell` | 复习·听写 / 默写 | 归一化比对；对 → 子步 +1（默写步通过则间隔 +1）；错 → 间隔归零、明天再来，返回 `answer` |
 
 统一返回：
 
@@ -131,9 +134,17 @@
 
 > 「答错 → 下方出现正确单词 → 重新输入时答案消失」由前端 `input` 事件清空 `answer` 实现；服务端不保存这个瞬时状态。
 
-## GET /api/review/due
+## GET /api/review/stats
 
-可选间隔复习队列。`SMART_REVIEW=0`（默认）时固定返回 `{"enabled": false, "words": []}`；为 `1` 时返回 R4/R5 已完成且 `next_due_at<=CURDATE()` 的词（最多 50 条），每项含 `progress_id / daily_plan_id / word / translation / study_date / review_stage / next_due_at`。只提供查询结果，**不推送提醒、不改轮次状态**。
+复习概览统计：
+
+```json
+{ "due": 15, "pool": 15, "mastered": 10 }
+```
+
+- `due`：今天到期待复习的词数
+- `pool`：复习池中的词数（`stage='memorized'`）
+- `mastered`：已背熟的词数（`stage='mastered'`）
 
 ## 模型选择与自检（可选，需配置 Key）
 
@@ -145,39 +156,15 @@
 
 未配 Key 时仍能调前两个接口（只是 `configured=false`，界面禁用切换）；`POST /api/llm/test` 会返回明确错误说明。`GET /api/health` 另附 `llm_model` 字段显示当前模型名。
 
-## GET /api/review-batches
+## POST /api/word/known
 
-按 `study_date` **升序**列出所有已完成 R1～R3 的批次（含已「真正学完」的，可回看、可重做）。
-
-```json
-{
-  "batches": [
-    {
-      "plan_id": 3,
-      "study_date": "2026-11-06",
-      "word_count": 18,
-      "stage": "memorized",
-      "memorized_at": "2026-11-06 14:20:00",
-      "mastered_at": null,
-      "review_status": "in_progress",
-      "done": 12,
-      "total": 36
-    }
-  ]
-}
-```
-
-`done / total` 只统计 R4、R5 两轮。
-
-## POST /api/review/restart
-
-重做某个已完成的批次：把该批次 round 4/5 的 `progress` 重置为 `pending`，`mastered_at` 清空、`stage` 回到 `memorized`，`review_status=in_progress`。
+「熟知」按钮：把某个词的全部 progress 直接标记为背熟（`status=done` + `stage=mastered`），跳过之后一切学习和复习。
 
 ```json
-{ "plan_id": 3 }
+{ "progress_id": 123 }
 ```
 
-只影响该批次自己的行，**不合并、不覆盖别的日期**。
+只影响该词自己的 progress 行（同一词在不同日期批次下可能有多行，全部一并标记）。
 
 ---
 
@@ -209,7 +196,7 @@
 
 | 接口 | 入参 | 返回 / 行为 |
 | --- | --- | --- |
-| `GET /api/articles/batches` | — | 只列出 `stage='mastered'` 的日期批次 + 已生成篇数。未真正学完的批次不出现 |
+| `GET /api/articles/batches` | — | 只列出学完 5 轮（`stage IN ('memorized','mastered')`）的日期批次 + 已生成篇数 |
 | `GET /api/articles/scenes` | — | 可选场景列表（默认 / 校园 / 实验室 / 职场 / 新闻 / 旅行） |
 | `GET /api/articles/daily?plan_id=&scene=` | 批次 id、`scene`（可选） | 首次调用按场景生成并持久化；重复调用返回**同一组文章**（场景只在首次生效）。返回 `summary`、`mode(full/sample)`、`scene`、`articles[]` |
 | `POST /api/articles/reveal` | `{article_id}` | 按 `article_word` 快照构建并返回 `segments[]`；**不落盘、不重新生成、不改正文**。揭示是每次视图手动触发，刷新后 `GET daily` 仍返回纯文本 |
@@ -258,6 +245,6 @@
 | --- | --- | --- |
 | 401 | `请先登录` | `LOCAL_MODE=0` 且无有效会话 |
 | 403 | `需要管理员权限` | 非管理员访问 `/api/admin/*` |
-| 400 | `短文只在该批次 5 轮全走完（真正学完）后才出现` | 批次还没 mastered |
+| 400 | `短文只在该批次学完 5 轮后才出现` | 批次还没学完 |
 | 400 | `题目与周次不匹配` / `周次格式应为 2026-W45` | 阅读答卷参数越界 |
 | 404 | `找不到该日期批次 / 这篇短文 / 这道题` | 不存在或属其他用户（越权与不存在同样返回 404） |
