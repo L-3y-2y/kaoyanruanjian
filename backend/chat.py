@@ -20,7 +20,7 @@ import json
 import os
 import re
 
-from db import execute, one, query, transaction
+from db import detach_for_llm, execute, one, query, transaction
 from llm import GenerationFailed, NoProvider, generate_json, generate_text
 
 MAX_TURNS = int(os.getenv("CHAT_MAX_TURNS", "8"))
@@ -341,6 +341,7 @@ def generate_practice_card(conn, user_id, kind):
         + "Student request: generate one " + ("cloze" if kind == "cloze" else "reading")
         + " exercise now.\nJSON:"
     )
+    detach_for_llm(conn)  # word bank + digest read; release locks before LLM
     # Free-tier models occasionally miss a field or the exact count. Retry once
     # with a blunt reminder before giving up, so a transient slip is not fatal.
     data = None
@@ -499,6 +500,8 @@ def reply(conn, session, user_id, question):
     prompt = _messages_prompt(effective_context, prior, question, practice_block)
     budget = PRACTICE_TOKENS if is_practice else MAX_REPLY_TOKENS
     timeout = PRACTICE_TIMEOUT if is_practice else None
+    # History/session are read; release the transaction before the network call.
+    detach_for_llm(conn)
     answer, provider = generate_text(prompt, max_tokens=budget, timeout=timeout)
 
     # Free-tier models sometimes produce only a handful of blanks. One bounded

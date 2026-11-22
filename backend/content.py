@@ -16,7 +16,9 @@ import json
 import re
 from datetime import date, datetime, time, timedelta
 
-from db import execute, one, query
+from pymysql.err import IntegrityError
+
+from db import detach_for_llm, execute, one, query
 from llm import GenerationFailed, NoProvider, configured, generate_json, grade_subjective
 
 WORDS_PER_ARTICLE = 12
@@ -281,6 +283,10 @@ def _llm_article(words, seq, scene="default"):
 
 def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
                   mode, uncovered, publish_at=None, deadline=None, scene="default"):
+    # All inputs are already read by the caller. Release the read transaction
+    # before the (slow) LLM call so the connection/locks are not held while we
+    # wait on the network. The UNIQUE article keys below make the write idempotent.
+    detach_for_llm(conn)
     llm_title = ""
     if configured():
         try:
@@ -292,17 +298,30 @@ def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
     default_title = (f"第 {seq} 篇 · {len(words)} 词短文" if kind == "daily"
                      else f"第 {seq} 篇 · 本周阅读理解")
     title = llm_title or default_title
-    execute(
-        conn,
-        """INSERT INTO `article`
-           (user_id, kind, daily_plan_id, week_key, seq, title, body, mode, scene,
-            covered_words, total_words, uncovered, revealed, publish_at,
-            deadline, generator)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,%s)""",
-        (user_id, kind, plan_id, week_key, seq, title, body, mode, scene,
-         len(words), len(words) + len(uncovered),
-         json.dumps(uncovered, ensure_ascii=False), publish_at, deadline, provider),
-    )
+    try:
+        execute(
+            conn,
+            """INSERT INTO `article`
+               (user_id, kind, daily_plan_id, week_key, seq, title, body, mode, scene,
+                covered_words, total_words, uncovered, revealed, publish_at,
+                deadline, generator)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,%s)""",
+            (user_id, kind, plan_id, week_key, seq, title, body, mode, scene,
+             len(words), len(words) + len(uncovered),
+             json.dumps(uncovered, ensure_ascii=False), publish_at, deadline, provider),
+        )
+    except IntegrityError:
+        # Another request generated this same article while our LLM call ran.
+        # Return the row that won so we stay idempotent instead of crashing.
+        row = one(
+            conn,
+            """SELECT id FROM `article` WHERE user_id=%s AND kind=%s
+               AND daily_plan_id<=>%s AND week_key<=>%s AND seq=%s""",
+            (user_id, kind, plan_id, week_key, seq),
+        )
+        if not row:
+            raise
+        return row["id"]
     article_id = one(conn, "SELECT LAST_INSERT_ID() AS id")["id"]
     marked = scan_article_words(body, words)
     if marked:
@@ -350,6 +369,7 @@ def regenerate_article(conn, *, user_id, article_id):
     )
     if not rows:
         raise KeyError("batch-words-missing")
+    detach_for_llm(conn)  # inputs read; do not hold locks during the LLM call
     title, body, provider = _llm_article(rows, art["seq"], scene)
     if not title:
         title = f"第 {art['seq']} 篇 · {len(rows)} 词短文"
@@ -702,6 +722,9 @@ def _llm_questions(article, words):
 
 def _questions_for(conn, article_id, user_id, article, words):
     """Prefer LLM-generated questions; keep the old template set as fallback."""
+    # The article row is already written; commit it and release the lock before
+    # the question-generation network call.
+    detach_for_llm(conn)
     items = None
     if configured():
         try:
@@ -710,6 +733,10 @@ def _questions_for(conn, article_id, user_id, article, words):
             items = None
     if items is None:
         items = _template_questions(article, words)
+    # Avoid duplicate question sets if a racing request already filled this
+    # article while our LLM call was running.
+    if one(conn, "SELECT id FROM `question` WHERE article_id=%s LIMIT 1", (article_id,)):
+        return
     for item in items:
         execute(
             conn,
@@ -821,45 +848,71 @@ def reading_payload(conn, user_id, week_key):
     }
 
 
-def grade_answer(conn, user_id, question, value, week_key, late):
-    """Write one exam answer. Returns the result dict; idempotent per question."""
-    existing = one(
+def _exam_existing(conn, user_id, question_id):
+    return one(
         conn,
         """SELECT * FROM `answer_log` WHERE user_id=%s AND kind='exam'
            AND question_id=%s ORDER BY id DESC LIMIT 1""",
-        (user_id, question["id"]),
+        (user_id, question_id),
     )
+
+
+def _exam_result_from(row):
+    return {"duplicate": True, "correct": row["correct"],
+            "score": float(row["score"]) if row["score"] is not None else None,
+            "reason": row["ai_result"], "standard_answer": None}
+
+
+def grade_answer(conn, user_id, question, value, week_key, late):
+    """Write one exam answer. Idempotent per question, even under concurrency.
+
+    The unique key uk_exam_question(user_id, question_id) is the final guard:
+    two simultaneous submissions can both pass the initial SELECT, but only
+    one INSERT wins — the loser catches IntegrityError and returns the stored
+    answer instead of double-writing (or crashing the whole request).
+    """
+    existing = _exam_existing(conn, user_id, question["id"])
     if existing:
-        return {"duplicate": True, "correct": existing["correct"],
-                "score": float(existing["score"]) if existing["score"] is not None else None,
-                "reason": existing["ai_result"], "standard_answer": None}
+        return _exam_result_from(existing)
+
     if question["ai_graded"]:
         score, reason, provider = grade_subjective(
             question["reference_answer"] or "", value
         )
         correct = 1 if score >= 6 else 0
-        execute(
-            conn,
-            """INSERT INTO `answer_log`
+        insert_args = (
+            user_id, question["id"], question["article_id"], week_key, value,
+            correct, score, 0 if late else 1, 1 if late else 0,
+            json.dumps({"reason": reason, "provider": provider}, ensure_ascii=False),
+        )
+        sql = """INSERT INTO `answer_log`
                (user_id, kind, question_id, article_id, week_key, action,
                 user_answer, correct, score, scored, is_late, ai_result)
-               VALUES (%s,'exam',%s,%s,%s,'subjective',%s,%s,%s,%s,%s,%s)""",
-            (user_id, question["id"], question["article_id"], week_key, value,
-             correct, score, 0 if late else 1, 1 if late else 0,
-             json.dumps({"reason": reason, "provider": provider}, ensure_ascii=False)),
+               VALUES (%s,'exam',%s,%s,%s,'subjective',%s,%s,%s,%s,%s,%s)"""
+        fresh = {"duplicate": False, "correct": correct, "score": score,
+                 "reason": reason, "standard_answer": question["reference_answer"]}
+    else:
+        correct = 1 if (value or "").strip().upper() == (question["correct_option"] or "").upper() else 0
+        score = 10.0 if correct else 0.0
+        insert_args = (
+            user_id, question["id"], question["article_id"], week_key, value,
+            correct, score, 0 if late else 1, 1 if late else 0,
         )
-        return {"duplicate": False, "correct": correct, "score": score,
-                "reason": reason, "standard_answer": question["reference_answer"]}
-    correct = 1 if (value or "").strip().upper() == (question["correct_option"] or "").upper() else 0
-    score = 10.0 if correct else 0.0
-    execute(
-        conn,
-        """INSERT INTO `answer_log`
-           (user_id, kind, question_id, article_id, week_key, action,
-            user_answer, correct, score, scored, is_late)
-           VALUES (%s,'exam',%s,%s,%s,'objective',%s,%s,%s,%s,%s)""",
-        (user_id, question["id"], question["article_id"], week_key, value,
-         correct, score, 0 if late else 1, 1 if late else 0),
-    )
-    return {"duplicate": False, "correct": bool(correct), "score": score,
-            "reason": None, "standard_answer": question["correct_option"]}
+        sql = """INSERT INTO `answer_log`
+               (user_id, kind, question_id, article_id, week_key, action,
+                user_answer, correct, score, scored, is_late)
+               VALUES (%s,'exam',%s,%s,%s,'objective',%s,%s,%s,%s,%s)"""
+        fresh = {"duplicate": False, "correct": bool(correct), "score": score,
+                 "reason": None, "standard_answer": question["correct_option"]}
+
+    # INSERT IGNORE: on uk_exam_question collision it silently skips (rowcount
+    # 0) instead of raising 1062, so the caller's transaction stays healthy.
+    # rowcount 1 means WE inserted; 0 means a concurrent request already stored
+    # this answer, so return the saved result as a duplicate.
+    ignore_sql = sql.replace("INSERT INTO", "INSERT IGNORE INTO", 1)
+    rowcount = execute(conn, ignore_sql, insert_args)
+    if rowcount == 0:
+        stored = _exam_existing(conn, user_id, question["id"])
+        if stored:
+            return _exam_result_from(stored)
+    return fresh

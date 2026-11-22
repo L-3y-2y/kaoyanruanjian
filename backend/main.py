@@ -129,12 +129,20 @@ def log_answer(conn, uid, p, action, value=None, correct=None, assessment=None):
 
 
 def mark_done(conn, progress_id):
-    # The WHERE clause is the duplicate-submit guard.
+    # The WHERE ... status='pending' clause is the atomic duplicate-submit
+    # guard: only the request that actually flips pending->done may write a
+    # completion log. Callers MUST check the returned rowcount.
     return execute(
         conn,
         "UPDATE `progress` SET status='done' WHERE id=%s AND status='pending'",
         (progress_id,),
     )
+
+
+def require_mark_done(conn, progress_id):
+    """Flip pending->done atomically; 0 rows means a concurrent request won."""
+    if mark_done(conn, progress_id) == 0:
+        raise HTTPException(status_code=409, detail="这题已提交，请勿重复作答")
 
 
 def schedule_review(conn, progress_id, remembered=True):
@@ -217,55 +225,89 @@ LIMIT 1
 """
 
 
-def fetch_state(conn, uid, mode, plan_id=None):
-    if mode == "learn":
-        plan = one(
-            conn,
-            "SELECT * FROM `daily_plan` WHERE user_id=%s AND study_date=CURDATE()",
-            (uid,),
-        )
-        if not plan:
-            return {"kind": "need_plan", "pool": pool_size(conn, uid)}
-        counts = plan_totals(conn, uid, plan["id"], 1, 3)
-        row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 1, 3))
-        if not row:
-            if plan["stage"] == "learning":
-                execute(conn,
-                        """UPDATE `daily_plan`
-                           SET stage='memorized', memorized_at=NOW()
-                           WHERE id=%s AND stage='learning'""",
-                        (plan["id"],))
-                execute(conn,
-                        "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s",
-                        (uid, plan["id"]))
-            return {"kind": "learning_done", "plan_id": plan["id"],
-                    "word_count": plan["word_count"], "stage": "memorized"}
-        return item_payload(row, plan, counts, f"r{row['round']}")
+def _learn_plan(conn, uid):
+    return one(
+        conn,
+        "SELECT * FROM `daily_plan` WHERE user_id=%s AND study_date=CURDATE()",
+        (uid,),
+    )
 
+
+def _review_plan(conn, uid, plan_id):
+    if plan_id is None:
+        raise HTTPException(status_code=400, detail="复习模式需要 plan_id")
     plan = one(conn, "SELECT * FROM `daily_plan` WHERE id=%s AND user_id=%s",
                (plan_id, uid))
     if not plan:
         raise HTTPException(status_code=404, detail="找不到该日期批次")
     if plan["memorized_at"] is None:
         raise HTTPException(status_code=400, detail="该批次还没完成当天的 R1~R3")
-    if plan["review_status"] == "not_started":
-        execute(conn,
-                """UPDATE `daily_plan` SET review_status='in_progress',
-                   last_review_at=NOW() WHERE id=%s""", (plan["id"],))
+    return plan
+
+
+def fetch_state(conn, uid, mode, plan_id=None):
+    """READ-ONLY state snapshot. Never writes — safe for GET /api/state."""
+    if mode == "learn":
+        plan = _learn_plan(conn, uid)
+        if not plan:
+            return {"kind": "need_plan", "pool": pool_size(conn, uid)}
+        counts = plan_totals(conn, uid, plan["id"], 1, 3)
+        row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 1, 3))
+        if not row:
+            return {"kind": "learning_done", "plan_id": plan["id"],
+                    "word_count": plan["word_count"],
+                    "stage": plan["stage"] or "memorized"}
+        return item_payload(row, plan, counts, f"r{row['round']}")
+
+    plan = _review_plan(conn, uid, plan_id)
     counts = plan_totals(conn, uid, plan["id"], 4, 5)
     row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 4, 5))
     if not row:
-        if plan["stage"] != "mastered":
-            execute(conn,
-                    """UPDATE `daily_plan` SET stage='mastered',
-                       mastered_at=NOW(), review_status='done' WHERE id=%s""",
-                    (plan["id"],))
-            execute(conn,
-                    "UPDATE `progress` SET stage='mastered' WHERE user_id=%s AND daily_plan_id=%s",
-                    (uid, plan["id"]))
         return {"kind": "review_done", "plan_id": plan["id"],
-                "word_count": plan["word_count"], "stage": "mastered"}
+                "word_count": plan["word_count"], "stage": plan["stage"] or "mastered"}
     return item_payload(row, plan, counts, f"r{row['round']}")
+
+
+def advance_state(conn, uid, mode, plan_id=None):
+    """Advance plan/stage transitions after a WRITE. Call only from write routes.
+
+    These were previously triggered as a side effect of GET /api/state, which
+    made a read-only request mutate data and hold a write lock. Now the exact
+    same transitions run inside POST /api/answer (and plan creation), where a
+    write is legitimate. Idempotent: guarded by explicit stage/status checks.
+    """
+    if mode == "learn":
+        plan = _learn_plan(conn, uid)
+        if not plan or plan["stage"] != "learning":
+            return
+        if plan_totals(conn, uid, plan["id"], 1, 3)["done"] < plan["word_count"] * 3:
+            return
+        execute(conn,
+                """UPDATE `daily_plan`
+                   SET stage='memorized', memorized_at=COALESCE(memorized_at, NOW())
+                   WHERE id=%s AND stage='learning'""", (plan["id"],))
+        execute(conn,
+                "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s AND stage='none'",
+                (uid, plan["id"]))
+        return
+
+    plan = _review_plan(conn, uid, plan_id)
+    if plan["review_status"] == "not_started":
+        execute(conn,
+                """UPDATE `daily_plan` SET review_status='in_progress',
+                   last_review_at=NOW() WHERE id=%s AND review_status='not_started'""",
+                (plan["id"],))
+    if plan["stage"] == "mastered":
+        return
+    if plan_totals(conn, uid, plan["id"], 4, 5)["done"] < plan["word_count"] * 2:
+        return
+    execute(conn,
+            """UPDATE `daily_plan` SET stage='mastered',
+               mastered_at=NOW(), review_status='done' WHERE id=%s AND stage<>'mastered'""",
+            (plan["id"],))
+    execute(conn,
+            "UPDATE `progress` SET stage='mastered' WHERE user_id=%s AND daily_plan_id=%s AND stage<>'mastered'",
+            (uid, plan["id"]))
 
 
 # ---------------------------------------------------------------- models
@@ -470,13 +512,13 @@ def answer(req: AnswerIn, user=Depends(current_user)):
             return result
 
         if r == 1 and action == "known":
-            mark_done(conn, p["id"])
+            require_mark_done(conn, p["id"])
             log_answer(conn, uid, p, "known", correct=1)
             result["correct"] = True
 
         elif r in (2, 3, 5) and action == "spell":
             if norm(req.value) == norm(p["spelling"]):
-                mark_done(conn, p["id"])
+                require_mark_done(conn, p["id"])
                 log_answer(conn, uid, p, "spell", value=req.value, correct=1)
                 schedule_review(conn, p["id"], remembered=True)
                 result["correct"] = True
@@ -497,7 +539,7 @@ def answer(req: AnswerIn, user=Depends(current_user)):
         elif r == 4 and action == "self_assess":
             if req.assessment not in ("remembered", "forgotten"):
                 raise HTTPException(status_code=400, detail="请选择记住了或没记住")
-            mark_done(conn, p["id"])
+            require_mark_done(conn, p["id"])
             log_answer(conn, uid, p, "self_assess", value=req.value,
                        assessment=req.assessment)
             schedule_review(conn, p["id"], remembered=(req.assessment == "remembered"))
@@ -506,6 +548,10 @@ def answer(req: AnswerIn, user=Depends(current_user)):
         else:
             raise HTTPException(status_code=400, detail="action 与当前轮次不匹配")
 
+        # State transitions (memorized / mastered) used to happen as a side
+        # effect of GET /api/state. They now run here, inside the write that
+        # completed the last item — a read-only GET never mutates data.
+        advance_state(conn, uid, mode, plan_id)
         result["state"] = fetch_state(conn, uid, mode, plan_id)
         return result
 

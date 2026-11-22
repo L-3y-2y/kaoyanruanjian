@@ -73,6 +73,20 @@ def execute(conn, sql, args=()):
         return cur.execute(sql, args)
 
 
+def detach_for_llm(conn):
+    """End the current read transaction before a slow network/LLM call.
+
+    Generation paths first read what they need (existing rows, word lists),
+    then call an LLM, then write. Holding a transaction open across the network
+    call pins a pooled connection and its locks for tens of seconds when many
+    users generate at once. Committing here releases those locks; the writes
+    that follow open a fresh transaction, protected by UNIQUE keys so a racing
+    duplicate generate cannot create two articles. Idempotent if there is no
+    active transaction.
+    """
+    conn.commit()
+
+
 def split_sql(text):
     """Split schema.sql into single statements, dropping -- line comments."""
     statements, buf = [], []
@@ -140,6 +154,32 @@ def ensure_columns(cur):
             cur.execute(f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` {ddl}")
 
 
+def _index_exists(cur, table, index):
+    cur.execute(
+        """SELECT COUNT(*) AS c FROM information_schema.statistics
+           WHERE table_schema=%s AND table_name=%s AND index_name=%s""",
+        (DB_NAME, table, index),
+    )
+    return bool(cur.fetchone()["c"])
+
+
+def ensure_indexes(cur):
+    """Idempotent UNIQUE indexes added after stage 1~3 shipped.
+
+    exam: one answer per (user, question) — the grade path is idempotent and
+    duplicate exam rows corrupt the score summary. `question_id` is NULL for
+    word answers, so the UNIQUE key only constrains real exam rows.
+    Note: word answers legitimately repeat (a wrong spell is retried, r4 reveal
+    then self-assess), so we do NOT add a uniqueness constraint there — the
+    mark_done() rowcount guard handles concurrent duplicate completions.
+    """
+    if not _index_exists(cur, "answer_log", "uk_exam_question"):
+        cur.execute(
+            """ALTER TABLE `answer_log`
+               ADD UNIQUE KEY `uk_exam_question` (`user_id`,`question_id`)"""
+        )
+
+
 def init_schema():
     """Idempotent: safe to run on every backend startup."""
     sql_text = (BASE / "schema.sql").read_text(encoding="utf-8")
@@ -150,6 +190,7 @@ def init_schema():
             for stmt in split_sql(sql_text):
                 cur.execute(stmt)
             ensure_columns(cur)
+            ensure_indexes(cur)
         conn.commit()
     except Exception:
         conn.rollback()

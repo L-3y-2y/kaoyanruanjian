@@ -153,7 +153,13 @@ def main():
     try:
         before = snapshot()
         print(f"[0] legacy data before: {before}")
-        assert before["plans"] >= 1, "pre-existing local plan missing - refusing to test"
+        has_legacy = before["plans"] >= 1
+        if not has_legacy:
+            # Clean CI / fresh database: no local plan to protect. The rest of
+            # the suite is self-contained (it creates its own throw-away plan),
+            # so we still run everything and just skip the legacy-guard checks.
+            print("[0] no pre-existing local plan (clean environment) - "
+                  "running without legacy-data assertions")
 
         health = Client().call("/api/health")
         print(f"[1] health: {health['database']} / {health['tables']} tables / "
