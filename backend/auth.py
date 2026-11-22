@@ -75,7 +75,9 @@ def _clear_throttle(key):
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    rounds = 200_000
+    # OWASP (2023) recommends 600k iterations for PBKDF2-HMAC-SHA256.
+    # Older hashes store their own rounds, so they still verify correctly.
+    rounds = 600_000
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
     return f"pbkdf2_sha256${rounds}${salt.hex()}${dk.hex()}"
 

@@ -740,7 +740,7 @@ def _questions_for(conn, article_id, user_id, article, words):
     for item in items:
         execute(
             conn,
-            """INSERT INTO `question`
+            """INSERT IGNORE INTO `question`
                (article_id, user_id, qtype, stem, options, correct_option,
                 reference_answer, word_id, ai_graded, sort_no)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",

@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS `question` (
   `word_id`          INT NULL,
   `ai_graded`        TINYINT NOT NULL DEFAULT 0,
   `sort_no`          TINYINT NOT NULL DEFAULT 1,
+  UNIQUE KEY `uk_question_sort` (`article_id`,`sort_no`),
   INDEX `idx_article` (`article_id`),
   INDEX `idx_user_article` (`user_id`,`article_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -178,6 +178,11 @@ def ensure_indexes(cur):
             """ALTER TABLE `answer_log`
                ADD UNIQUE KEY `uk_exam_question` (`user_id`,`question_id`)"""
         )
+    if not _index_exists(cur, "question", "uk_question_sort"):
+        cur.execute(
+            """ALTER TABLE `question`
+               ADD UNIQUE KEY `uk_question_sort` (`article_id`,`sort_no`)"""
+        )
 
 
 def init_schema():
