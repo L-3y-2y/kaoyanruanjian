@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, playWord } from '../api.js'
 import { refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const stats = ref({ due: 0, pool: 0, mastered: 0 })
 const state = ref(null)
@@ -13,6 +14,7 @@ const shownAnswer = ref('')
 const revealed = ref(false)
 const correctFlash = ref(false)
 let flashTimer = null
+const confirmKnown = ref(false)
 
 const subStepLabel = computed(() => {
   const s = state.value?.sub_step
@@ -100,6 +102,7 @@ async function submit(payload) {
 // 「熟知」：这个词我已经会了，直接标记背熟，从复习队列移除。
 async function markKnown() {
   if (busy.value || !state.value?.progress_id) return
+  confirmKnown.value = false
   busy.value = true
   error.value = ''
   try {
@@ -138,7 +141,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
       <div class="quiz-head">
         <span class="round">{{ subStepLabel }}</span>
         <span class="muted">{{ progressText }}</span>
-        <button class="known-btn" :disabled="busy" @click="markKnown">熟知 · 跳过</button>
+        <button class="known-btn" :disabled="busy" @click="confirmKnown = true">熟知 · 跳过</button>
       </div>
 
       <div v-if="correctFlash" class="correct-flash">✓ 默写正确，做得好！</div>
@@ -182,4 +185,14 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
       <p class="muted">目前已背熟 {{ stats.mastered }} 个词，继续保持！</p>
     </section>
   </main>
+
+  <ConfirmDialog
+    :show="confirmKnown"
+    title="确认已掌握这个单词？"
+    :message="`「${state?.word || '这个词'}」会从复习队列移除并标记为「已背熟」。此操作无法撤销。`"
+    confirm-text="确认，我已掌握"
+    cancel-text="再想想"
+    @confirm="markKnown"
+    @cancel="confirmKnown = false"
+  />
 </template>

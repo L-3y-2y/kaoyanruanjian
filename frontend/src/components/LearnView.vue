@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, playWord, roundName } from '../api.js'
 import { refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const pool = ref(null)
 const state = ref(null)
@@ -16,6 +17,7 @@ const r4Phase = ref('write')
 const standardAnswer = ref('')
 const correctFlash = ref(false)
 let flashTimer = null
+const confirmKnown = ref(false)
 
 const progressPct = computed(() => {
   const s = state.value
@@ -134,6 +136,7 @@ async function submit(payload) {
 // 「熟知」：这个词我已经会了，直接标记背熟，跳过学习和复习。
 async function markKnown() {
   if (busy.value || !state.value?.progress_id) return
+  confirmKnown.value = false
   busy.value = true
   error.value = ''
   try {
@@ -187,7 +190,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
       <div class="quiz-head">
         <span class="round">{{ currentRound }}</span>
         <span class="muted">第 {{ state.cycle_no }} / {{ state.cycle_count }} 组（本组 {{ state.cycle_size }} 词）</span>
-        <button class="known-btn" :disabled="busy" @click="markKnown">熟知 · 跳过</button>
+        <button class="known-btn" :disabled="busy" @click="confirmKnown = true">熟知 · 跳过</button>
       </div>
       <div class="bar"><div :style="{ width: progressPct + '%' }"></div></div>
       <p class="muted small">已完成 {{ state.word_done }} / {{ state.word_total }} 词</p>
@@ -258,6 +261,16 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
       </template>
     </section>
   </main>
+
+  <ConfirmDialog
+    :show="confirmKnown"
+    title="确认已掌握这个单词？"
+    :message="`「${state?.word || '这个词'}」会被直接标记为「已背熟」，之后不再出现在学习和复习中。此操作无法撤销。`"
+    confirm-text="确认，我已掌握"
+    cancel-text="再想想"
+    @confirm="markKnown"
+    @cancel="confirmKnown = false"
+  />
 </template>
 
 <style scoped>

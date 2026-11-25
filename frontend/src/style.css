@@ -453,6 +453,9 @@ button.kw.other:hover { background: var(--surface); color: var(--ink-soft); }
   backdrop-filter: blur(3px);
   display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50;
 }
+.confirm-dialog { width: 100%; max-width: 400px; text-align: left; }
+.confirm-dialog h3 { margin: 0 0 8px; }
+.confirm-msg { margin: 0 0 4px; line-height: 1.7; }
 .model-panel { width: 100%; max-width: 470px; max-height: 86vh; overflow: auto; }
 .model-list { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
 .model-item {
