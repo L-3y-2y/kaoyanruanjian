@@ -166,7 +166,9 @@ onMounted(async () => {
             <p class="muted small">{{ b.word_count }} 词 · {{ b.article_count ? '已生成 ' + b.article_count + ' 篇' : '尚未生成' }}</p>
           </div>
           <div class="batch-actions">
-            <button class="primary" @click="openBatch(b.plan_id)">阅读短文</button>
+            <button class="primary" @click="openBatch(b.plan_id)">
+              {{ b.article_count ? '阅读短文' : '生成短文' }}
+            </button>
           </div>
         </div>
       </section>

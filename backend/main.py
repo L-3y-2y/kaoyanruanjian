@@ -334,7 +334,12 @@ def advance_state(conn, uid, mode, plan_id=None):
     answer route.
     """
     if mode == "learn":
-        plan = _learn_plan(conn, uid)
+        if plan_id:
+            plan = one(conn,
+                       "SELECT * FROM `daily_plan` WHERE id=%s AND user_id=%s",
+                       (plan_id, uid))
+        else:
+            plan = _learn_plan(conn, uid)
         if not plan or plan["stage"] != "learning":
             return
         if plan_totals(conn, uid, plan["id"], 1, 5)["done"] < plan["word_count"] * 5:
@@ -702,10 +707,14 @@ def review_stats(user=Depends(current_user)):
 
 @app.post("/api/word/known")
 def mark_known(req: KnownIn, user=Depends(current_user)):
-    """「熟知」button: mark a word as already known — skip learning and review."""
+    """「熟知」button: mark a word as already known — skip learning and review.
+
+    A fully "known"-skipped plan must still unlock its daily articles, so we
+    run advance_state here too (a word that is already mastered counts as done).
+    """
     uid = user["id"]
     with transaction() as conn:
-        p = one(conn, "SELECT word_id FROM `progress` WHERE id=%s AND user_id=%s",
+        p = one(conn, "SELECT word_id, daily_plan_id FROM `progress` WHERE id=%s AND user_id=%s",
                 (req.progress_id, uid))
         if not p:
             raise HTTPException(status_code=404, detail="找不到该单词")
@@ -715,6 +724,7 @@ def mark_known(req: KnownIn, user=Depends(current_user)):
         execute(conn,
                 "UPDATE `progress` SET review_round=0, review_stage=0, next_due_at=NULL WHERE user_id=%s AND word_id=%s",
                 (uid, p["word_id"]))
+        advance_state(conn, uid, "learn", p["daily_plan_id"])
         return {"ok": True}
 
 
