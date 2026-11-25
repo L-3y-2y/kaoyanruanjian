@@ -178,3 +178,13 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX `idx_session` (`session_id`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Study-time dashboard: one row per (user, day), seconds accumulated via the
+-- frontend heartbeat. Never touched by progress/answer_log/chat.
+CREATE TABLE IF NOT EXISTS `study_time` (
+  `user_id`    INT  NOT NULL,
+  `study_date` DATE NOT NULL,
+  `seconds`    INT  NOT NULL DEFAULT 0,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`, `study_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

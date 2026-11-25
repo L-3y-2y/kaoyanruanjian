@@ -1,5 +1,15 @@
 <script setup>
+import { computed } from 'vue'
 import { store, openModel, openSwitchAccount, toggleTheme } from '../store.js'
+
+const durationText = computed(() => {
+  const s = store.todaySeconds || 0
+  if (s < 60) return `${s} 秒`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} 分钟`
+  const h = Math.floor(m / 60)
+  return `${h} 小时 ${m % 60} 分`
+})
 </script>
 
 <template>
@@ -12,6 +22,11 @@ import { store, openModel, openSwitchAccount, toggleTheme } from '../store.js'
       </div>
     </div>
     <div class="header-right">
+      <div class="today-chip" v-if="store.me">
+        <span>今日学习 <strong>{{ durationText }}</strong></span>
+        <span class="sep">·</span>
+        <span>已背 <strong>{{ store.todayLearned }}</strong> 词</span>
+      </div>
       <div class="db-chip" v-if="store.health">
         <span class="dot"></span>
         已连接 {{ store.health.database }}

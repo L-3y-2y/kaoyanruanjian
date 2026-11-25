@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted } from 'vue'
-import { store, initTheme, loadMe, refreshHeader, loadModelInfo, closeChat, closeModel, onAuthDone, onModelChanged } from './store.js'
+import { store, initTheme, loadMe, refreshHeader, loadModelInfo, loadTodayStats, closeChat, closeModel, onAuthDone, onModelChanged } from './store.js'
+import { startStudyTimer } from './studyTimer.js'
 import AuthPanel from './components/AuthPanel.vue'
 import TopBar from './components/TopBar.vue'
 import NavTabs from './components/NavTabs.vue'
@@ -17,7 +18,9 @@ onMounted(async () => {
   initTheme()
   await loadMe()
   await refreshHeader()
+  await loadTodayStats()
   await loadModelInfo()
+  startStudyTimer()
 })
 </script>
 

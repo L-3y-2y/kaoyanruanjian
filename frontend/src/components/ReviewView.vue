@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, playWord } from '../api.js'
-import { refreshHeader as onChanged, goTab } from '../store.js'
+import { refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
 
 const stats = ref({ due: 0, pool: 0, mastered: 0 })
 const state = ref(null)
@@ -11,6 +11,8 @@ const error = ref('')
 const input = ref('')
 const shownAnswer = ref('')
 const revealed = ref(false)
+const correctFlash = ref(false)
+let flashTimer = null
 
 const subStepLabel = computed(() => {
   const s = state.value?.sub_step
@@ -31,6 +33,11 @@ function onInput() {
   if (shownAnswer.value) shownAnswer.value = ''
 }
 
+function onProgressChange() {
+  onChanged()
+  loadTodayStats()
+}
+
 async function loadStats() {
   stats.value = await api('/api/review/stats')
 }
@@ -47,22 +54,47 @@ async function refresh() {
   finally { loading.value = false }
 }
 
+async function applyState(s) {
+  state.value = s
+  resetTransient()
+  await loadStats()
+  onProgressChange()
+}
+
 async function submit(payload) {
   if (busy.value || !state.value?.progress_id) return
   busy.value = true
   error.value = ''
+  const stepBefore = state.value?.sub_step
   try {
     const r = await api('/api/answer', {
       method: 'POST',
       body: JSON.stringify({ progress_id: state.value.progress_id, ...payload })
     })
-    if (r.reveal) { revealed.value = true; return }
-    if (r.correct === false) { shownAnswer.value = r.answer; input.value = ''; return }
-    if (r.state) { state.value = r.state; resetTransient() }
-    await loadStats()
-    onChanged()
-  } catch (e) { error.value = e.message }
-  finally { busy.value = false }
+    if (r.reveal) { revealed.value = true; busy.value = false; return }
+    if (r.correct === false) { shownAnswer.value = r.answer; input.value = ''; busy.value = false; return }
+    // 听写/默写答对：先给出「默写正确」反馈，再进入下一步。
+    const wasSpell = stepBefore === 2 || stepBefore === 3
+    if (wasSpell && r.state) {
+      correctFlash.value = true
+      flashTimer = setTimeout(async () => {
+        try {
+          await applyState(r.state)
+        } catch (e) {
+          error.value = e.message
+        } finally {
+          correctFlash.value = false
+          busy.value = false
+        }
+      }, 650)
+      return
+    }
+    await applyState(r.state)
+    busy.value = false
+  } catch (e) {
+    error.value = e.message
+    busy.value = false
+  }
 }
 
 // 「熟知」：这个词我已经会了，直接标记背熟，从复习队列移除。
@@ -78,12 +110,13 @@ async function markKnown() {
     state.value = await api('/api/state?mode=review')
     resetTransient()
     await loadStats()
-    onChanged()
+    onProgressChange()
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
 
 onMounted(refresh)
+onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
 </script>
 
 <template>
@@ -107,6 +140,8 @@ onMounted(refresh)
         <span class="muted">{{ progressText }}</span>
         <button class="known-btn" :disabled="busy" @click="markKnown">熟知 · 跳过</button>
       </div>
+
+      <div v-if="correctFlash" class="correct-flash">✓ 默写正确，做得好！</div>
 
       <template v-if="state.sub_step === 1">
         <div class="word-big">{{ state.word }}</div>

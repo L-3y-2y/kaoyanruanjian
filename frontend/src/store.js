@@ -8,6 +8,8 @@ export const store = reactive({
   health: null,             // /api/health 结果（词库数、模型、数据库名）
   pool: null,               // 未掌握词池 { available, total }
   batchesCount: 0,          // 今日到期复习词数（导航角标）
+  todaySeconds: 0,          // 今日学习时长（秒）
+  todayLearned: 0,          // 今日已背单词数
   modelInfo: { configured: false, current: '', models: [] },
   theme: 'light',
   activeTab: 'learn',       // 当前主视图：learn/review/articles/reading/wordbank/admin
@@ -49,6 +51,16 @@ export async function refreshHeader() {
     store.batchesCount = r.due
   } catch (e) {
     store.error = e.message
+  }
+}
+
+export async function loadTodayStats() {
+  try {
+    const t = await api('/api/study/today')
+    store.todaySeconds = t.seconds
+    store.todayLearned = t.learned_words
+  } catch {
+    // 统计接口不可用时保持原值，不打断学习流程
   }
 }
 
@@ -103,6 +115,7 @@ export async function onAuthDone() {
   store.showAuth = false
   await loadMe()
   await refreshHeader()
+  await loadTodayStats()
   await loadModelInfo()
   store.activeTab = 'learn'
 }

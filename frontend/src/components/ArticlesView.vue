@@ -83,7 +83,7 @@ function cleanMeaning(text) {
 function ensureCloze(article) {
   if (!shown.value[article.id] || cloze.value[article.id]) return
   const segs = article.segments || []
-  const marked = segs.map((s, i) => ({ ...s, i })).filter(s => s.word)
+  const marked = segs.map((s, i) => ({ ...s, i })).filter(s => s.word && s.word.is_target)
   if (!marked.length) return
   const pool = [...new Set(marked.map(s => cleanMeaning(s.word.translation)).filter(Boolean))]
   const items = marked.slice(0, Math.min(5, marked.length)).map((m, idx) => {
@@ -189,14 +189,15 @@ onMounted(async () => {
 
         <div v-if="!shown[a.id]" class="prose">{{ a.body }}</div>
         <div v-else class="prose"><template v-for="(seg, i) in a.segments" :key="i"><button
-          v-if="seg.word" class="kw" @click="activeWord = seg.word; activeWordArticle = a.id">{{ seg.text }}</button><span
+          v-if="seg.word" class="kw" :class="seg.word.is_target ? 'target' : 'other'"
+          @click="activeWord = seg.word; activeWordArticle = a.id">{{ seg.text }}</button><span
           v-else>{{ seg.text }}</span></template></div>
 
         <div class="article-foot">
           <button v-if="!shown[a.id]" class="primary" :disabled="busy" @click="reveal(a)">
-            显示今日词（点击文中单词可查释义）
+            显示全部单词释义（今日词高亮）
           </button>
-          <button v-else class="ghost" :disabled="busy" @click="hide(a)">隐藏高亮 · 回到纯文本</button>
+          <button v-else class="ghost" :disabled="busy" @click="hide(a)">隐藏 · 回到纯文本</button>
           <button class="ghost" :disabled="busy" @click="regenerate(a)">用大模型重新生成</button>
           <button class="ghost" @click="openChat({ source_type: 'article', source_id: a.id, title: a.title })">问 AI · 这篇文章</button>
           <span class="muted small">生成方式：{{ a.generator }}</span>
@@ -235,7 +236,7 @@ onMounted(async () => {
         <p class="muted small">{{ activeWord.pos }} {{ activeWord.phonetic }}</p>
         <button class="ghost" @click="playWord(activeWord.surface)">播放读音</button>
         <button class="ghost" @click="openChat({ source_type: 'article', source_id: activeWordArticle, title: '词义追问 · ' + activeWord.surface })">问 AI · 追问这个词</button>
-        <p class="hint">这条释义是短文生成时存下的快照，以后词库改了也不会变。</p>
+        <p class="hint">{{ activeWord.is_target ? '这是今日所学词的释义快照。' : '该释义来自内置词典。' }}</p>
       </div>
     </template>
   </main>

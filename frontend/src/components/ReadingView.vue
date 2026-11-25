@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { api } from '../api.js'
+import { api, playWord } from '../api.js'
 import { openChat } from '../store.js'
 
 const weeks = ref([])
@@ -11,6 +11,9 @@ const busy = ref(false)
 const error = ref('')
 const selected = reactive({})
 const subjective = reactive({})
+const shown = reactive({})
+const activeWord = ref(null)
+const revealBusy = ref(false)
 
 async function loadWeeks() {
   const r = await api('/api/reading/weeks')
@@ -22,6 +25,8 @@ async function loadReading() {
   if (!weekKey.value) return
   loading.value = true
   error.value = ''
+  activeWord.value = null
+  for (const k of Object.keys(shown)) delete shown[k]
   try {
     data.value = await api(`/api/reading?week_key=${weekKey.value}`)
   } catch (e) { error.value = e.message; data.value = null }
@@ -37,6 +42,25 @@ async function publishNow() {
     await loadReading()
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
+}
+
+async function revealArticle(a) {
+  if (revealBusy.value) return
+  revealBusy.value = true
+  error.value = ''
+  try {
+    const r = await api('/api/articles/reveal', {
+      method: 'POST', body: JSON.stringify({ article_id: a.id })
+    })
+    a.segments = r.segments
+    shown[a.id] = true
+  } catch (e) { error.value = e.message }
+  finally { revealBusy.value = false }
+}
+
+function hideArticle(a) {
+  delete shown[a.id]
+  activeWord.value = null
 }
 
 function refreshSummary() {
@@ -134,7 +158,25 @@ onMounted(async () => {
               <span class="chip">{{ a.mode === 'full' ? '全放' : '抽词' }}</span>
             </div>
           </div>
-          <div class="prose">{{ a.body }}</div>
+          <div v-if="!shown[a.id]" class="prose">{{ a.body }}</div>
+          <div v-else class="prose"><template v-for="(seg, i) in a.segments" :key="i"><button
+            v-if="seg.word" class="kw" :class="seg.word.is_target ? 'target' : 'other'"
+            @click="activeWord = seg.word">{{ seg.text }}</button><span
+            v-else>{{ seg.text }}</span></template></div>
+
+          <div class="article-foot">
+            <button v-if="!shown[a.id]" class="primary" :disabled="revealBusy" @click="revealArticle(a)">显示全部单词释义</button>
+            <button v-else class="ghost" :disabled="revealBusy" @click="hideArticle(a)">隐藏 · 回到纯文本</button>
+          </div>
+
+          <div v-if="activeWord" class="meaning-card">
+            <button class="close" @click="activeWord = null">×</button>
+            <div class="meaning-title">{{ activeWord.surface }} · {{ activeWord.translation || '（暂无释义）' }}</div>
+            <p class="muted small" v-if="activeWord.phonetic">{{ activeWord.phonetic }}</p>
+            <button class="ghost" @click="playWord(activeWord.surface)">播放读音</button>
+            <p class="hint">{{ activeWord.is_target ? '这是本周所学词的释义快照。' : '该释义来自内置词典。' }}</p>
+          </div>
+
           <div v-if="a.uncovered?.length" class="uncovered">
             <strong>本周未收录词（{{ a.uncovered.length }}）</strong>
             <div class="chips"><span v-for="w in a.uncovered" :key="w">{{ w }}</span></div>

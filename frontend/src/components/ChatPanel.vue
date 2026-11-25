@@ -10,6 +10,19 @@ function parseCard(content) {
   try { return JSON.parse(content.slice(CARD_MARKER.length)) } catch { return null }
 }
 
+function escapeHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+// 轻量 Markdown 渲染：把模型偶尔输出的 **加粗** 等符号转成正常排版，避免出现「星 星」。
+function renderMarkdown(s) {
+  let t = escapeHtml(s)
+  t = t.replace(/`([^`]+)`/g, '<code>$1</code>')
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  t = t.replace(/\n/g, '<br>')
+  return t
+}
+
 const props = defineProps({
   context: { type: Object, default: null }   // {source_type, source_id, title}
 })
@@ -35,6 +48,9 @@ async function send() {
   busy.value = true
   error.value = ''
   input.value = ''
+  // 立即显示用户消息，避免等待 AI 回复期间看不到自己发的问题。
+  messages.value.push({ role: 'user', content: text })
+  await scrollDown()
   try {
     if (!sessionId.value) {
       const r = await api('/api/chat/start', {
@@ -47,12 +63,8 @@ async function send() {
       })
       sessionId.value = r.session_id
       title.value = r.title || title.value
-      messages.value = [
-        { role: 'user', content: text },
-        { role: 'assistant', content: r.reply?.content || '' }
-      ]
+      messages.value.push({ role: 'assistant', content: r.reply?.content || '' })
     } else {
-      messages.value.push({ role: 'user', content: text })
       const r = await api('/api/chat/ask', {
         method: 'POST',
         body: JSON.stringify({ session_id: sessionId.value, question: text })
@@ -63,8 +75,11 @@ async function send() {
     await scrollDown()
   } catch (e) {
     error.value = e.message
-    // If the very first turn failed, allow retry by keeping the input.
-    if (!sessionId.value) input.value = text
+    // 首条失败时移除乐观消息、恢复输入，允许重试。
+    if (!sessionId.value) {
+      messages.value.pop()
+      input.value = text
+    }
   } finally {
     busy.value = false
   }
@@ -127,7 +142,7 @@ function askAbout(text) {
         <div v-for="(m, i) in messages" :key="i" class="chat-msg" :class="m.role">
           <span class="chat-who">{{ m.role === 'user' ? '你' : 'AI 老师' }}</span>
           <PracticeCard v-if="m.card || parseCard(m.content)" :card="m.card || parseCard(m.content)" @ask="askAbout" />
-          <div v-else class="chat-bubble">{{ m.content }}</div>
+          <div v-else class="chat-bubble" v-html="renderMarkdown(m.content)"></div>
         </div>
         <div v-if="busy" class="chat-msg assistant">
           <span class="chat-who">AI 老师</span>
@@ -139,9 +154,10 @@ function askAbout(text) {
       <div class="chat-quick">
         <button type="button" :disabled="busy" @click="generateCard('cloze')">选词填空 · 交互</button>
         <button type="button" :disabled="busy" @click="generateCard('reading')">阅读理解 · 交互</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英译汉练习，附参考译文')">翻译练习</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一篇考研英语大作文题目（图画/图表，160-200 词）并给写作提纲')">大作文</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一篇考研英语小作文题目（书信/通知，约 100 词）')">小作文</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一道考研汉译英练习：先只给一句中文，等我翻译成英文后再给参考译文并批改')">汉译英练习</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英译汉练习：先只给一句英文，等我翻译成中文后再给参考译文并批改')">英译汉练习</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英语大作文题目（图画/图表，160-200 词），只给题目和提纲，不要范文；等我写完再批改')">大作文</button>
+        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英语小作文题目（书信/通知，约 100 词），只给题目要求；等我写完再批改')">小作文</button>
       </div>
       <div class="chat-input">
         <input v-model="input" :disabled="busy" placeholder="中翻英 / 英翻中 / 查词 / 问语法…"

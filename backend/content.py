@@ -20,6 +20,7 @@ from pymysql.err import IntegrityError
 
 from db import detach_for_llm, execute, one, query
 from llm import GenerationFailed, NoProvider, configured, generate_json, grade_subjective
+import dict_lookup
 
 WORDS_PER_ARTICLE = 12
 MAX_ARTICLES = 3
@@ -495,6 +496,57 @@ def article_segments(conn, article):
               "phonetic": m["phonetic_snapshot"], "pos": m["pos_snapshot"],
               "position": m["position"]} for m in marked]
     return segments_for(article["body"], words)
+
+
+def article_full_segments(conn, article):
+    """Token-level clickable layer for EVERY word in the body.
+
+    Target words (rows in article_word) keep their stored translation snapshot
+    and get is_target=True; every other alphabetic token is looked up in ECDICT
+    and gets is_target=False so the UI can colour the two differently. Text
+    between tokens is preserved verbatim.
+    """
+    body = article["body"] or ""
+    marked = query(
+        conn,
+        """SELECT surface, word_id, translation_snapshot, phonetic_snapshot,
+                  pos_snapshot FROM `article_word`
+           WHERE article_id=%s ORDER BY position ASC""",
+        (article["id"],),
+    )
+    target = {m["surface"].strip().lower(): m for m in marked}
+    segments = []
+    cursor = 0
+    for m in TOKEN_RE.finditer(body):
+        token = m.group(0)
+        if m.start() > cursor:
+            segments.append({"text": body[cursor:m.start()], "word": None})
+        t = target.get(token.lower())
+        if t:
+            segments.append({
+                "text": token,
+                "word": {
+                    "surface": token, "word_id": t["word_id"], "is_target": True,
+                    "translation": t["translation_snapshot"] or "",
+                    "phonetic": t["phonetic_snapshot"] or "",
+                    "pos": t["pos_snapshot"] or "",
+                },
+            })
+        else:
+            hit = dict_lookup.lookup(token)
+            segments.append({
+                "text": token,
+                "word": {
+                    "surface": token, "word_id": None, "is_target": False,
+                    "translation": hit[0] if hit else "",
+                    "phonetic": hit[1] if hit else "",
+                    "pos": "",
+                },
+            })
+        cursor = m.end()
+    if cursor < len(body):
+        segments.append({"text": body[cursor:], "word": None})
+    return segments
 
 
 def article_payload(conn, article):

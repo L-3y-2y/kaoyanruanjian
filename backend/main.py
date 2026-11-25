@@ -27,10 +27,11 @@ from pydantic import BaseModel, Field
 
 from auth import LOCAL_MODE, current_user, require_admin, router as auth_router
 from content import (
-    SCENES, SCENE_LABELS, article_payload, article_segments, daily_batches,
-    ensure_daily_articles, ensure_weekly, grade_answer, reading_payload,
-    regenerate_article, week_key_of, week_bounds,
+    SCENES, SCENE_LABELS, article_full_segments, article_payload,
+    article_segments, daily_batches, ensure_daily_articles, ensure_weekly,
+    grade_answer, reading_payload, regenerate_article, week_key_of, week_bounds,
 )
+import dict_lookup
 from db import DB_NAME, connect, execute, init_schema, one, query, transaction
 from llm import (
     GenerationFailed, NoProvider, available_models, configured as llm_configured,
@@ -78,6 +79,9 @@ async def lifespan(app):
     _scheduler_stop.clear()
     worker = threading.Thread(target=_scheduler_loop, daemon=True, name="weekly-publish")
     worker.start()
+    # Warm the ECDICT dictionary in the background so the first "show every
+    # word" click is instant instead of paying the ~1-2s CSV parse inline.
+    threading.Thread(target=dict_lookup.warm, daemon=True, name="dict-warm").start()
     try:
         yield
     finally:
@@ -314,7 +318,21 @@ def fetch_state(conn, uid, mode, plan_id=None):
             return {"kind": "learning_done", "plan_id": plan["id"],
                     "word_count": plan["word_count"],
                     "stage": plan["stage"] or "memorized"}
-        return item_payload(row, plan, counts, f"r{row['round']}")
+        payload = item_payload(row, plan, counts, f"r{row['round']}")
+        # Word-level progress so the learner sees "第 3 / 10 词" — matching the
+        # number they picked on the slider — instead of a round×5 tally.
+        word_done = one(
+            conn,
+            """SELECT COUNT(*) AS c FROM (
+                 SELECT word_id FROM `progress`
+                 WHERE user_id=%s AND daily_plan_id=%s
+                 GROUP BY word_id HAVING SUM(status='done') = COUNT(*)
+               ) t""",
+            (uid, plan["id"]),
+        )["c"]
+        payload["word_total"] = plan["word_count"]
+        payload["word_done"] = int(word_done)
+        return payload
 
     # Ebbinghaus review: next due word across all batches. No plan_id needed —
     # review is word-level (each word has its own due date), not batch-level.
@@ -377,6 +395,10 @@ class AnswerIn(BaseModel):
 
 class KnownIn(BaseModel):
     progress_id: int
+
+
+class HeartbeatIn(BaseModel):
+    seconds: int = Field(ge=1, le=3600)
 
 
 class RevealIn(BaseModel):
@@ -705,6 +727,45 @@ def review_stats(user=Depends(current_user)):
         return {"due": int(due), "pool": int(pool), "mastered": int(mastered)}
 
 
+# ---------------------------------------------------------------- study dashboard
+
+@app.post("/api/study/heartbeat")
+def study_heartbeat(req: HeartbeatIn, user=Depends(current_user)):
+    """Accumulate today's active study seconds. Idempotent per user+day."""
+    with transaction() as conn:
+        execute(
+            conn,
+            """INSERT INTO `study_time` (user_id, study_date, seconds)
+               VALUES (%s, CURDATE(), %s)
+               ON DUPLICATE KEY UPDATE seconds = seconds + VALUES(seconds)""",
+            (user["id"], req.seconds),
+        )
+    return {"ok": True}
+
+
+@app.get("/api/study/today")
+def study_today(user=Depends(current_user)):
+    """Today's study duration and count of words learned/backed so far."""
+    uid = user["id"]
+    with transaction() as conn:
+        seconds = one(
+            conn,
+            "SELECT seconds FROM `study_time` WHERE user_id=%s AND study_date=CURDATE()",
+            (uid,),
+        )
+        learned = one(
+            conn,
+            """SELECT COUNT(DISTINCT word_id) AS c FROM `progress`
+               WHERE user_id=%s AND stage IN ('memorized','mastered')
+                 AND DATE(updated_at) = CURDATE()""",
+            (uid,),
+        )
+    return {
+        "seconds": int(seconds["seconds"]) if seconds else 0,
+        "learned_words": int(learned["c"]),
+    }
+
+
 @app.post("/api/word/known")
 def mark_known(req: KnownIn, user=Depends(current_user)):
     """「熟知」button: mark a word as already known — skip learning and review.
@@ -767,15 +828,16 @@ def reveal_article(req: RevealIn, user=Depends(current_user)):
     with transaction() as conn:
         art = one(
             conn,
-            """SELECT * FROM `article` WHERE id=%s AND user_id=%s AND kind='daily'""",
+            """SELECT * FROM `article` WHERE id=%s AND user_id=%s""",
             (req.article_id, user["id"]),
         )
         if not art:
             raise HTTPException(status_code=404, detail="找不到这篇短文")
-        # No longer persisted: revealing is a per-view action. Return the
-        # segments built from the saved translation snapshots; a refresh starts
-        # over with plain text. The snapshots themselves are untouched.
-        return {"ok": True, "segments": article_segments(conn, art)}
+        # Revealing is a per-view action (not persisted). Return a clickable
+        # layer for EVERY word: target words carry their saved snapshot and
+        # is_target=True; every other word is looked up in the built-in
+        # dictionary with is_target=False. Works for daily and weekly alike.
+        return {"ok": True, "segments": article_full_segments(conn, art)}
 
 
 @app.post("/api/articles/regenerate")
