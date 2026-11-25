@@ -94,7 +94,8 @@ function ensureCloze(article) {
     const start = Math.max(0, ...starts.map(x => x + 1))
     const ends = [full.indexOf('.', pos), full.indexOf('!', pos), full.indexOf('?', pos)].filter(x => x >= 0)
     const end = ends.length ? Math.min(...ends) + 1 : full.length
-    const sentence = full.slice(start, end).replace(token, '______').trim()
+    const sentence = full.slice(start, end).replace(token, '______')
+      .replace(/\{\{(\d+)\}\}/g, (_, i) => segs[Number(i)].text).trim()
     const right = cleanMeaning(m.word.translation) || m.word.surface
     const others = pool.filter(x => x && x !== right)
     const opts = [right, ...others.slice(0, 3)]
