@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api, playWord } from '../api.js'
-import { openChat } from '../store.js'
+import { store, openChat } from '../store.js'
 
 const batches = ref([])
 const scenes = ref([])
@@ -151,7 +151,7 @@ onMounted(async () => {
 
     <template v-else-if="!activePlanId">
       <section class="card">
-        <h2>每日短文</h2>
+        <h2>每日短文<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
         <p class="muted">学完当天批次的 5 轮后即可看短文；按批次永久保存，重复进入看到的是同一组。</p>
         <p class="muted small">选一个场景再点「阅读短文」，大模型会按这个场景写。已经生成过的批次不会重写。</p>
         <div class="scene-picker">

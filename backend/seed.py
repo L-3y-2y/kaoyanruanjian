@@ -49,17 +49,26 @@ def ensure_words(conn, csv_path=None):
     return inserted
 
 
-def import_ecdict(conn, csv_path, limit=None):
-    """Import ECDICT rows whose tag contains `ky`. Idempotent."""
+def import_ecdict(conn, csv_path, limit=None, tags=None, source=None):
+    """Import ECDICT rows whose tag contains any of `tags`. Idempotent.
+
+    `tags` defaults to the single `ky` tag so the original call site keeps
+    its old behaviour. Multi-book imports pass all exam tags; INSERT IGNORE
+    leaves already-imported words untouched (their full ECDICT tag string is
+    preserved, which is what lets one word belong to several books).
+    """
     path = Path(csv_path)
     if not path.is_file():
         raise FileNotFoundError(f"ECDICT CSV not found: {path}")
+    wanted = set(tags) if tags else {"ky"}
+    label = source or ("ECDICT-" + "-".join(sorted(wanted)))
     inserted = skipped = 0
     with path.open("r", encoding="utf-8-sig", newline="", errors="replace") as fh:
         for row in csv.DictReader(fh):
             word = _clean(row.get("word"))
             tag = _clean(row.get("tag")) or ""
-            if not word or "ky" not in tag.split():
+            tags_of_word = set(tag.split())
+            if not word or not wanted.intersection(tags_of_word):
                 skipped += 1
                 continue
             translation = _clean(row.get("translation")) or _clean(row.get("definition"))
@@ -76,7 +85,7 @@ def import_ecdict(conn, csv_path, limit=None):
                         _clean(row.get("pos")),
                         tag,
                         _clean(row.get("exchange")),
-                        "ECDICT-ky",
+                        label,
                         0,
                     ),
                 )

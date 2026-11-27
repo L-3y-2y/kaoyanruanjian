@@ -114,7 +114,7 @@ def resolve_user(request: Request):
         try:
             row = one(
                 conn,
-                """SELECT s.user_id, s.is_admin, u.username
+                """SELECT s.user_id, s.is_admin, u.username, u.current_book_id
                    FROM `user_session` s LEFT JOIN `user` u ON u.id=s.user_id
                    WHERE s.token=%s AND s.expires_at > NOW() AND s.is_admin=0""",
                 (token,),
@@ -130,12 +130,20 @@ def resolve_user(request: Request):
             conn.close()
         if row:
             return {"id": row["user_id"], "username": row["username"],
-                    "is_admin": 0, "local": False}
+                    "is_admin": 0, "local": False,
+                    "book_id": int(row["current_book_id"] or 1)}
         if admin:
             return {"id": admin["user_id"], "username": admin["username"],
-                    "is_admin": 1, "local": False}
+                    "is_admin": 1, "local": False, "book_id": 1}
     if LOCAL_MODE and _local_allowed(request):
-        return {"id": 1, "username": "local", "is_admin": 0, "local": True}
+        # The local placeholder is a real `user` row, so honour its book too.
+        conn = connect()
+        try:
+            local_row = one(conn, "SELECT current_book_id FROM `user` WHERE id=1")
+        finally:
+            conn.close()
+        return {"id": 1, "username": "local", "is_admin": 0, "local": True,
+                "book_id": int((local_row or {}).get("current_book_id") or 1)}
     raise HTTPException(status_code=401, detail="请先登录")
 
 

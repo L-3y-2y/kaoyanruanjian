@@ -33,12 +33,28 @@
 
 `server_date` 用来表明日期批次以**服务端 DATE** 为准，不用浏览器本地时间。
 
-## GET /api/pool
+## 多书籍接口
 
-返回「未掌握池」剩余可学词数（从未进过任何批次的词）。
+所有取词 / 进度 / 生成接口都按 `user.current_book_id` 过滤，浏览器不传书籍 id。
+
+### GET /api/books
+列出四本书及该用户的词数 / 已学词数：
 
 ```json
-{ "available": 42, "total": 60 }
+{ "books": [{ "id": 1, "code": "ky", "name": "考研英语", "exam_type": "考研英语",
+              "tag_filter": "ky", "word_count": 4803, "learned": 45, "current": true }],
+  "current_book_id": 1 }
+```
+
+### GET /api/book/current · POST /api/book/current
+查看 / 切换当前书。POST 请求体 `{ "book_id": 2 }`；切换立即影响后续所有请求，各页面会重建并重新取数。管理员账号（不在 `user` 表）不支持切换。
+
+## GET /api/pool
+
+返回**当前书**的「未掌握池」剩余可学词数与该书总词数。
+
+```json
+{ "available": 42, "total": 60, "book_id": 1, "book_name": "考研英语" }
 ```
 
 ## GET /api/state?mode=learn
@@ -229,7 +245,17 @@
 | `GET /api/chat/sessions` | — | 本 user 的会话列表（按最近更新） |
 | `POST /api/chat/delete` | `{session_id}` | 删本人会话及其消息 |
 
-所有 chat 接口**只写 `chat_session`/`chat_message`，不碰 progress / answer_log / 五轮状态**。8 轮上限、最多 8 次提问；未配 Key 返回 400。
+所有 chat 接口**只写 `chat_session`/`chat_message`，不碰 progress / answer_log / 五轮状态**。8 轮上限、最多 8 次提问；未配 Key 返回 400。AI 角色、出题难度、今日词库、要规避的旧文章都按当前书注入；已开会话沿用建会话时的书。
+
+## 情景式背词（旁路，A/B/C）
+
+| 接口 | 入参 | 返回 / 行为 |
+| --- | --- | --- |
+| `GET /api/scenario/bundle?limit=5` | limit 1～10 | `{book_id, book_name, items:[{id,word,translation,pos,example,scene}]}`。取当前书今日词（无则用最近学过 / 该书词库前 N）并按需生成例句与场景 |
+| `GET /api/scenario/example?word_id=` | 词 id | `{seq, sentence, translation, source}`：10～25 词真题风格短句，带中文翻译 |
+| `GET /api/scenario/scene?word_id=` | 词 id | `{scene_text, image_prompt, image_url, source}`：`image_url` 是 SVG data URI 场景卡，无外部依赖 |
+
+例句与场景按 `(word, book)` 懒生成并 `INSERT IGNORE` 缓存，刷新后不变、换书会重新生成。未配 LLM Key 时用确定性本地模板。三个接口**完全旁路**：不写 `progress` / `answer_log`，判分在前端本地完成。B（短文沉浸）复用 `/api/articles/*`，不新增接口。
 
 ## 阶段 4：管理员词库（v2 已实现）
 

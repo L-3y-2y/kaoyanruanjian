@@ -189,3 +189,13 @@ R4 的汉语释义**不机器判分**：需求定的是「写完显示标准答�
 - **熟知按钮**：`POST /api/word/known` 一键把该词标背熟，跳过学习和复习。
 - **数据**：`progress` 新增 `review_round`（当前间隔内子步 0/1/2）；删除旧的批次级复习接口（`/api/review-batches`、`/api/review/restart`、`/api/review/due`、`SMART_REVIEW`），新增 `/api/review/stats`。
 - **迁移**：`scripts/migrate_ebbinghaus.py` 把历史批次未学完的词补齐进复习池，mastered 词保持。
+
+## 24. 多书籍 + 情景式背词 A/B/C（2026-11-27）
+
+**为什么按书隔离而不是全书共用**：approach 这类词同时带 `cet4/cet6/ky` 标签，若 progress 只有 `(user, word, round)` 唯一键，换书后进度会串，用户会遇到「选了四级书，词池里却混着考研学过的词」。用户拍板「每本书独立进度」，因此把唯一键扩成 `(user, book, word, round)`，`daily_plan` 的日唯一键扩成 `(user, book, date)`，周阅读文章唯一键扩成 `(user, kind, week_key, seq, book)`。老数据全部标 `book_id=1`，迁移脚本幂等无损。
+
+**书籍是标签过滤，不是词条复制**：ECDICT 的 `tag` 本来就带多个考试标签，一个词天然属于多本书。`book.tag_filter` 存 `ky/cet4/cet6/gk`，取词用 `CONCAT(' ', tag, ' ') LIKE '% ky %'` 保证边界匹配；`INSERT IGNORE` 让新导入的词不覆盖已有词。词库从 4803 涨到 7395 属预期。
+
+**四条生成链路的一致性**：短文、周阅读题目、AI 助教、练习卡都从 `user.current_book_id` 读考试类型并注入 prompt，做到「难度 + 词汇范围跟书走」。明确**不做**各考试专属题型（高考语法填空等）——那是二期。已生成的内容不因换书重写；已开的 AI 会话沿用建会话时的书，避免中途串味。
+
+**情景 A/B/C 的定位**：A（微情景例句）和 C（图片联想）做成纯旁路，按 `(word, book)` 懒生成并缓存，`INSERT IGNORE` 保证刷新稳定，不写 `progress`、不改进度；B（短文沉浸）直接复用已有短文页，不新增后端。C 的图片用服务端生成的 SVG data URI 而非外部生图 API——零依赖、离线可用，且不会在卡片上直接显示答案词；抽象词靠中文场景描述降级。周五定时任务只为「该书有 mastered 批次」的用户生成周阅读，避免每次启动为四本书盲生成浪费 LLM 额度。

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, playWord, roundName } from '../api.js'
-import { refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
+import { store, refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
 import ConfirmDialog from './ConfirmDialog.vue'
 
 const pool = ref(null)
@@ -162,7 +162,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
     <p class="error" v-if="error">{{ error }}</p>
 
     <section v-if="state?.kind === 'need_plan'" class="card">
-      <h2>今天要背多少个词？</h2>
+      <h2>今天要背多少个词？<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
       <p class="muted">拖动滑轴选择数量，1～100 个任选。新词只从「未掌握池」取，不会和以前的日期批次重复。</p>
       <div class="range-box">
         <div class="range-value"><strong>{{ countN }}</strong> <span>词</span></div>
@@ -177,7 +177,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
     </section>
 
     <section v-else-if="state?.kind === 'learning_done'" class="card done">
-      <h2>今天的 {{ state.word_count }} 个词已学完</h2>
+      <h2>今天的 {{ state.word_count }} 个词已学完<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
       <p>5 轮全部走完，已进入复习池，之后会按遗忘曲线（1/2/4/7/15/30 天）自动安排复习。</p>
       <p class="muted">现在就可以看今天的短文了。</p>
       <div class="actions">

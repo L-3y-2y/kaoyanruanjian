@@ -1,6 +1,20 @@
 <script setup>
-import { computed } from 'vue'
-import { store, openModel, openSwitchAccount, toggleTheme } from '../store.js'
+import { computed, ref } from 'vue'
+import { store, openModel, openSwitchAccount, toggleTheme, switchBook } from '../store.js'
+
+const switching = ref(false)
+const logoText = computed(() => ({
+  ky: '研', cet4: '四', cet6: '六', gk: '高',
+}[store.currentBook?.code] || '研'))
+
+async function onBookChange(e) {
+  switching.value = true
+  try {
+    await switchBook(Number(e.target.value))
+  } finally {
+    switching.value = false
+  }
+}
 
 const durationText = computed(() => {
   const s = store.todaySeconds || 0
@@ -15,13 +29,21 @@ const durationText = computed(() => {
 <template>
   <header class="topbar">
     <div class="brand">
-      <div class="logo">研</div>
+      <div class="logo">{{ logoText }}</div>
       <div>
-        <h1>考研背单词</h1>
-        <p class="sub">五轮递进 · 日期批次复习 · 短文与周阅读</p>
+        <h1>{{ store.currentBook?.name || '单词学习' }}</h1>
+        <p class="sub">五轮递进 · 艾宾浩斯复习 · 短文与周阅读</p>
       </div>
     </div>
     <div class="header-right">
+      <label class="book-switch" v-if="store.books.length">
+        <span>当前书籍</span>
+        <select :value="store.currentBook?.id" :disabled="switching" @change="onBookChange">
+          <option v-for="b in store.books" :key="b.id" :value="b.id">
+            {{ b.name }} · {{ b.word_count }} 词
+          </option>
+        </select>
+      </label>
       <div class="today-chip" v-if="store.me">
         <span>今日学习 <strong>{{ durationText }}</strong></span>
         <span class="sep">·</span>

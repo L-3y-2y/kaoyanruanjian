@@ -122,6 +122,13 @@ def ensure_columns(cur):
     so restarting the backend is always safe and idempotent.
     """
     additions = [
+        # Multi-book shelves: legacy rows all belong to book 1 (考研英语).
+        ("user", "current_book_id", "INT NOT NULL DEFAULT 1"),
+        ("daily_plan", "book_id", "INT NOT NULL DEFAULT 1"),
+        ("progress", "book_id", "INT NOT NULL DEFAULT 1"),
+        ("answer_log", "book_id", "INT NOT NULL DEFAULT 1"),
+        ("article", "book_id", "INT NOT NULL DEFAULT 1"),
+        ("chat_session", "book_id", "INT NOT NULL DEFAULT 1"),
         ("user", "sample_cursor", "INT NOT NULL DEFAULT 0"),
         ("answer_log", "kind", "VARCHAR(16) NOT NULL DEFAULT 'word'"),
         ("answer_log", "question_id", "INT NULL"),
@@ -167,6 +174,35 @@ def _index_exists(cur, table, index):
     return bool(cur.fetchone()["c"])
 
 
+def _index_columns(cur, table, index):
+    cur.execute(
+        """SELECT column_name AS c FROM information_schema.statistics
+           WHERE table_schema=%s AND table_name=%s AND index_name=%s
+           ORDER BY seq_in_index""",
+        (DB_NAME, table, index),
+    )
+    return [r["c"] for r in cur.fetchall()]
+
+
+def _rebuild_unique(cur, table, old_name, new_name, columns):
+    """Replace an old UNIQUE key with the multi-book version, idempotently."""
+    wanted = list(columns)
+    old_cols = _index_columns(cur, table, old_name)
+    new_cols = _index_columns(cur, table, new_name) if new_name != old_name else []
+    if old_name == new_name and old_cols == wanted:
+        return
+    if new_cols == wanted:
+        return
+    if old_cols:
+        cur.execute(f"ALTER TABLE `{table}` DROP INDEX `{old_name}`")
+    if new_cols:
+        cur.execute(f"ALTER TABLE `{table}` DROP INDEX `{new_name}`")
+    col_sql = ",".join(f"`{c}`" for c in wanted)
+    cur.execute(
+        f"ALTER TABLE `{table}` ADD UNIQUE KEY `{new_name}` ({col_sql})"
+    )
+
+
 def ensure_indexes(cur):
     """Idempotent UNIQUE indexes added after stage 1~3 shipped.
 
@@ -186,6 +222,21 @@ def ensure_indexes(cur):
         cur.execute(
             """ALTER TABLE `question`
                ADD UNIQUE KEY `uk_question_sort` (`article_id`,`sort_no`)"""
+        )
+
+    # Multi-book shelves: widen uniqueness so one word can be studied
+    # independently in each book, and one week can hold an article per book.
+    _rebuild_unique(cur, "daily_plan", "uk_user_date", "uk_user_book_date",
+                    ("user_id", "book_id", "study_date"))
+    _rebuild_unique(cur, "progress", "uk_user_word_round",
+                    "uk_user_book_word_round",
+                    ("user_id", "book_id", "word_id", "round"))
+    _rebuild_unique(cur, "article", "uk_weekly_article", "uk_weekly_article",
+                    ("user_id", "kind", "week_key", "seq", "book_id"))
+    if not _index_exists(cur, "progress", "idx_fetch_book"):
+        cur.execute(
+            """ALTER TABLE `progress` ADD INDEX `idx_fetch_book`
+               (`user_id`,`book_id`,`status`,`daily_plan_id`,`id`)"""
         )
 
 

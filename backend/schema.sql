@@ -4,14 +4,38 @@
 -- NEVER drop or truncate a table here: user data must survive every restart.
 
 CREATE TABLE IF NOT EXISTS `user` (
-  `id`            INT AUTO_INCREMENT PRIMARY KEY,
-  `username`      VARCHAR(64)  NOT NULL,
-  `password_hash` VARCHAR(255) NOT NULL DEFAULT '',
-  `created_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `id`              INT AUTO_INCREMENT PRIMARY KEY,
+  `username`        VARCHAR(64)  NOT NULL,
+  `password_hash`   VARCHAR(255) NOT NULL DEFAULT '',
+  `current_book_id` INT          NOT NULL DEFAULT 1,
+  `created_at`      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_username` (`username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO `user` (`id`, `username`, `password_hash`) VALUES (1, 'local', '');
+
+-- Multi-book vocabulary shelves. A word may belong to several books (ECDICT
+-- `tag` already carries multiple exam tags), so books are a filter over the
+-- shared word table, not a copy of the words. Progress is isolated per book.
+CREATE TABLE IF NOT EXISTS `book` (
+  `id`          INT AUTO_INCREMENT PRIMARY KEY,
+  `code`        VARCHAR(32)  NOT NULL,
+  `name`        VARCHAR(64)  NOT NULL,
+  `exam_type`   VARCHAR(64)  NOT NULL,
+  `tag_filter`  VARCHAR(32)  NOT NULL,
+  `description` VARCHAR(255) NULL,
+  `sort_no`     INT          NOT NULL DEFAULT 0,
+  `enabled`     TINYINT      NOT NULL DEFAULT 1,
+  `created_at`  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_book_code` (`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `book`
+  (`id`, `code`, `name`, `exam_type`, `tag_filter`, `description`, `sort_no`) VALUES
+  (1, 'ky',   '考研英语', '考研英语',     'ky',   '考研大纲词汇 · 真题语境', 1),
+  (2, 'cet4', '四级词汇', '大学英语四级', 'cet4', '四级高频词 · 基础语境', 2),
+  (3, 'cet6', '六级词汇', '大学英语六级', 'cet6', '六级核心词 · 进阶语境', 3),
+  (4, 'gk',   '高考词汇', '高考英语',     'gk',   '高考大纲词 · 基础语境', 4);
 
 CREATE TABLE IF NOT EXISTS `admin` (
   `id`            INT AUTO_INCREMENT PRIMARY KEY,
@@ -48,6 +72,7 @@ CREATE TABLE IF NOT EXISTS `word` (
 CREATE TABLE IF NOT EXISTS `daily_plan` (
   `id`             INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`        INT  NOT NULL,
+  `book_id`        INT  NOT NULL DEFAULT 1,
   `study_date`     DATE NOT NULL,
   `word_count`     INT  NOT NULL,
   `cycle_count`    INT  NOT NULL,
@@ -58,13 +83,14 @@ CREATE TABLE IF NOT EXISTS `daily_plan` (
   `last_review_at` TIMESTAMP NULL,
   `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY `uk_user_date` (`user_id`, `study_date`),
+  UNIQUE KEY `uk_user_book_date` (`user_id`, `book_id`, `study_date`),
   INDEX `idx_study_date` (`study_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `progress` (
   `id`            INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`       INT NOT NULL,
+  `book_id`       INT NOT NULL DEFAULT 1,
   `word_id`       INT NOT NULL,
   `daily_plan_id` INT NOT NULL,
   `cycle_no`      INT NOT NULL,
@@ -77,14 +103,15 @@ CREATE TABLE IF NOT EXISTS `progress` (
   `last_review_at` DATETIME NULL,
   `next_due_at`   DATE NULL,
   `updated_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY `uk_user_word_round` (`user_id`, `word_id`, `round`),
-  INDEX `idx_fetch` (`user_id`, `daily_plan_id`, `status`, `cycle_no`, `round`, `id`),
+  UNIQUE KEY `uk_user_book_word_round` (`user_id`, `book_id`, `word_id`, `round`),
+  INDEX `idx_fetch` (`user_id`, `book_id`, `daily_plan_id`, `status`, `cycle_no`, `round`, `id`),
   INDEX `idx_plan_round` (`daily_plan_id`, `round`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `answer_log` (
   `id`              INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`         INT NOT NULL,
+  `book_id`         INT NOT NULL DEFAULT 1,
   `word_id`         INT NULL,
   `daily_plan_id`   INT NULL,
   `progress_id`     INT NULL,
@@ -102,6 +129,7 @@ CREATE TABLE IF NOT EXISTS `answer_log` (
 CREATE TABLE IF NOT EXISTS `article` (
   `id`            INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`       INT NOT NULL,
+  `book_id`       INT NOT NULL DEFAULT 1,
   `kind`          ENUM('daily','weekly') NOT NULL,
   `daily_plan_id` INT NULL,
   `week_key`      VARCHAR(16) NULL,
@@ -118,7 +146,7 @@ CREATE TABLE IF NOT EXISTS `article` (
   `generator`     VARCHAR(64) NULL,
   `created_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_daily_article` (`user_id`,`kind`,`daily_plan_id`,`seq`),
-  UNIQUE KEY `uk_weekly_article` (`user_id`,`kind`,`week_key`,`seq`),
+  UNIQUE KEY `uk_weekly_article` (`user_id`,`kind`,`week_key`,`seq`,`book_id`),
   INDEX `idx_user_kind` (`user_id`,`kind`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -159,6 +187,7 @@ CREATE TABLE IF NOT EXISTS `question` (
 CREATE TABLE IF NOT EXISTS `chat_session` (
   `id`          INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`     INT NOT NULL,
+  `book_id`     INT NOT NULL DEFAULT 1,
   `title`       VARCHAR(128) NOT NULL DEFAULT '通用英语',
   `source_type` VARCHAR(16)  NULL,   -- 'article' | 'question' | 'general'
   `source_id`   INT          NULL,   -- article.id or question.id
@@ -177,6 +206,34 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   `content`    MEDIUMTEXT NOT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX `idx_session` (`session_id`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Scenario-based learning (A: micro-sentences, C: visual scene cards).
+-- Generated lazily per word + book and cached; NEVER writes progress.
+CREATE TABLE IF NOT EXISTS `word_example` (
+  `id`         INT AUTO_INCREMENT PRIMARY KEY,
+  `word_id`    INT NOT NULL,
+  `book_id`    INT NOT NULL DEFAULT 1,
+  `seq`        TINYINT      NOT NULL DEFAULT 1,
+  `sentence`   VARCHAR(512) NOT NULL,
+  `translation` VARCHAR(512) NULL,
+  `source`     VARCHAR(32)  NOT NULL DEFAULT 'llm',
+  `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_example_word_book_seq` (`word_id`,`book_id`,`seq`),
+  INDEX `idx_example_word` (`word_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `word_scene` (
+  `id`          INT AUTO_INCREMENT PRIMARY KEY,
+  `word_id`     INT NOT NULL,
+  `book_id`     INT NOT NULL DEFAULT 1,
+  `scene_text`  VARCHAR(512) NOT NULL,
+  `image_prompt` VARCHAR(512) NULL,
+  `image_url`   VARCHAR(1024) NULL,
+  `source`      VARCHAR(32)  NOT NULL DEFAULT 'llm',
+  `created_at`  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_scene_word_book` (`word_id`,`book_id`),
+  INDEX `idx_scene_word` (`word_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Study-time dashboard: one row per (user, day), seconds accumulated via the

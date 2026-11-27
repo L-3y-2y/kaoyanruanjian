@@ -8,6 +8,7 @@ import { store, goTab, openChat } from '../store.js'
     <button :class="{ active: store.activeTab === 'review' }" @click="goTab('review')">
       复习板块 <span class="badge" v-if="store.batchesCount">{{ store.batchesCount }}</span>
     </button>
+    <button :class="{ active: store.activeTab === 'scenario' }" @click="goTab('scenario')">情景背词</button>
     <button :class="{ active: store.activeTab === 'articles' }" @click="goTab('articles')">每日短文</button>
     <button :class="{ active: store.activeTab === 'reading' }" @click="goTab('reading')">周阅读</button>
     <button v-if="store.me.local" :class="{ active: store.activeTab === 'wordbank' }" @click="goTab('wordbank')">词库管理</button>

@@ -10,6 +10,8 @@ export const store = reactive({
   batchesCount: 0,          // 今日到期复习词数（导航角标）
   todaySeconds: 0,          // 今日学习时长（秒）
   todayLearned: 0,          // 今日已背单词数
+  books: [],                // 可选书籍（考研/四级/六级/高考）
+  currentBook: null,        // 当前正在学的书
   modelInfo: { configured: false, current: '', models: [] },
   theme: 'light',
   activeTab: 'learn',       // 当前主视图：learn/review/articles/reading/wordbank/admin
@@ -52,6 +54,28 @@ export async function refreshHeader() {
   } catch (e) {
     store.error = e.message
   }
+}
+
+export async function loadBooks() {
+  try {
+    const r = await api('/api/books')
+    store.books = r.books || []
+    store.currentBook = store.books.find(b => b.id === r.current_book_id) || null
+  } catch {
+    // 接口不可用时保持上一次的书，不打断学习
+  }
+}
+
+export async function switchBook(bookId) {
+  await api('/api/book/current', {
+    method: 'POST',
+    body: JSON.stringify({ book_id: bookId }),
+  })
+  await loadBooks()
+  await refreshHeader()
+  await loadTodayStats()
+  store.activeTab = 'learn'
+  store.error = ''
 }
 
 export async function loadTodayStats() {
@@ -114,6 +138,7 @@ export async function logout() {
 export async function onAuthDone() {
   store.showAuth = false
   await loadMe()
+  await loadBooks()
   await refreshHeader()
   await loadTodayStats()
   await loadModelInfo()

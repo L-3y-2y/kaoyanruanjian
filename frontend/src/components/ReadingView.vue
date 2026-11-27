@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { api, playWord } from '../api.js'
-import { openChat } from '../store.js'
+import { store, openChat } from '../store.js'
 
 const weeks = ref([])
 const weekKey = ref('')
@@ -125,7 +125,7 @@ onMounted(async () => {
 
     <section class="card" v-if="weeks.length">
       <div class="week-row">
-        <h2>每周阅读理解</h2>
+        <h2>每周阅读理解<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
         <select v-model="weekKey" @change="loadReading">
           <option v-for="w in weeks" :key="w" :value="w">{{ w }}</option>
         </select>

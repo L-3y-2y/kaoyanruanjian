@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, playWord } from '../api.js'
-import { refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
+import { store, refreshHeader as onChanged, loadTodayStats, goTab } from '../store.js'
 import ConfirmDialog from './ConfirmDialog.vue'
 
 const stats = ref({ due: 0, pool: 0, mastered: 0 })
@@ -128,7 +128,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
     <p class="error" v-if="error">{{ error }}</p>
 
     <section class="card">
-      <h2>复习（艾宾浩斯遗忘曲线）</h2>
+      <h2>复习（艾宾浩斯遗忘曲线）<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
       <p class="muted">学过的词按 1 → 2 → 4 → 7 → 15 → 30 天自动排期；每次复习过三轮（认识 → 听写 → 默写），三轮都过才进入下一个间隔，全部间隔走完才算背熟。</p>
       <div class="review-stats">
         <div class="stat"><strong>{{ stats.due }}</strong><span>今日到期</span></div>
@@ -180,7 +180,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
     </section>
 
     <section v-else-if="state?.kind === 'review_empty'" class="card done">
-      <h2>今天没有需要复习的词</h2>
+      <h2>今天没有需要复习的词<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
       <p>复习池里还有 {{ stats.pool }} 个词，到期的词都复习完后会自动排到下一个间隔。</p>
       <p class="muted">目前已背熟 {{ stats.mastered }} 个词，继续保持！</p>
     </section>

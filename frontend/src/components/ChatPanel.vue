@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, ref } from 'vue'
 import { api } from '../api.js'
+import { store } from '../store.js'
 import PracticeCard from './PracticeCard.vue'
 
 const CARD_MARKER = '[[PRACTICE_CARD]]'
@@ -130,7 +131,7 @@ function askAbout(text) {
       <button class="chat-close" @click="emit('close')" aria-label="关闭">✕</button>
       <div class="article-head">
         <div>
-          <h2>英语 AI · {{ title }}</h2>
+          <h2>英语 AI · {{ title }}<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
           <p class="muted small">中翻英、英翻中、查词、问语法、自由聊天都可以；点「交互」按钮用今天学的词出考研题，直接点选作答、即时判分看解析。从短文或题目进来时会优先结合那段内容。</p>
         </div>
       </div>

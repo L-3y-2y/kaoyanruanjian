@@ -1,12 +1,13 @@
 <script setup>
 import { onMounted } from 'vue'
-import { store, initTheme, loadMe, refreshHeader, loadModelInfo, loadTodayStats, closeChat, closeModel, onAuthDone, onModelChanged } from './store.js'
+import { store, initTheme, loadMe, refreshHeader, loadModelInfo, loadTodayStats, loadBooks, closeChat, closeModel, onAuthDone, onModelChanged } from './store.js'
 import { startStudyTimer } from './studyTimer.js'
 import AuthPanel from './components/AuthPanel.vue'
 import TopBar from './components/TopBar.vue'
 import NavTabs from './components/NavTabs.vue'
 import LearnView from './components/LearnView.vue'
 import ReviewView from './components/ReviewView.vue'
+import ScenarioView from './components/ScenarioView.vue'
 import ArticlesView from './components/ArticlesView.vue'
 import ReadingView from './components/ReadingView.vue'
 import WordBank from './components/WordBank.vue'
@@ -17,6 +18,7 @@ import ChatPanel from './components/ChatPanel.vue'
 onMounted(async () => {
   initTheme()
   await loadMe()
+  await loadBooks()
   await refreshHeader()
   await loadTodayStats()
   await loadModelInfo()
@@ -41,10 +43,11 @@ onMounted(async () => {
 
       <NavTabs />
 
-      <LearnView v-if="store.activeTab === 'learn'" />
-      <ReviewView v-else-if="store.activeTab === 'review'" />
-      <ArticlesView v-else-if="store.activeTab === 'articles'" />
-      <ReadingView v-else-if="store.activeTab === 'reading'" />
+      <LearnView v-if="store.activeTab === 'learn'" :key="'learn-' + store.currentBook?.id" />
+      <ReviewView v-else-if="store.activeTab === 'review'" :key="'review-' + store.currentBook?.id" />
+      <ScenarioView v-else-if="store.activeTab === 'scenario'" :key="'scenario-' + store.currentBook?.id" />
+      <ArticlesView v-else-if="store.activeTab === 'articles'" :key="'articles-' + store.currentBook?.id" />
+      <ReadingView v-else-if="store.activeTab === 'reading'" :key="'reading-' + store.currentBook?.id" />
       <WordBank v-else-if="store.activeTab === 'wordbank'" />
       <AdminConsole v-else-if="store.activeTab === 'admin'" :me="store.me" :health="store.health" />
 

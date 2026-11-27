@@ -38,6 +38,7 @@ from llm import (
     current_model, switch_model, test_model,
 )
 import chat as chat_service
+import scenario as scenario_service
 from seed import ensure_words
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,8 +57,22 @@ def _publish_due_week():
     with transaction() as conn:
         users = query(conn, "SELECT id FROM `user` WHERE password_hash<>''")
         ids = [row["id"] for row in users] + [1]
+        books = query(conn, "SELECT * FROM `book` WHERE enabled=1")
         for uid in ids:
-            ensure_weekly(conn, uid, key)
+            for book in books:
+                # Only publish a shelf the learner has actually studied:
+                # otherwise every startup would burn LLM calls on four books
+                # for accounts that never opened them.
+                studied = one(
+                    conn,
+                    """SELECT 1 AS c FROM `daily_plan`
+                       WHERE user_id=%s AND book_id=%s AND stage='mastered'
+                       LIMIT 1""",
+                    (uid, book["id"]),
+                )
+                if not studied:
+                    continue
+                ensure_weekly(conn, uid, key, book_id=book["id"], book=book)
 
 
 def _scheduler_loop():
@@ -111,14 +126,28 @@ def norm(value):
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
-def pool_size(conn, uid):
+def book_row(conn, book_id):
+    """Current book row, with a safe fallback for stale/deleted ids."""
+    row = one(conn, "SELECT * FROM `book` WHERE id=%s AND enabled=1", (book_id,))
+    return row or one(conn, "SELECT * FROM `book` WHERE id=1")
+
+
+def book_pattern(book):
+    """Space-padded LIKE pattern so `ky` never matches inside another tag."""
+    return "% " + (book or {}).get("tag_filter", "ky") + " %"
+
+
+def pool_size(conn, uid, book):
+    """Unstudied words inside the CURRENT book only (progress is per-book)."""
     return one(
         conn,
         """SELECT COUNT(*) AS c FROM `word` w
-           WHERE NOT EXISTS (
-             SELECT 1 FROM `progress` p WHERE p.user_id=%s AND p.word_id=w.id
-           )""",
-        (uid,),
+           WHERE CONCAT(' ', IFNULL(w.tag,''), ' ') LIKE %s
+             AND NOT EXISTS (
+               SELECT 1 FROM `progress` p
+               WHERE p.user_id=%s AND p.book_id=%s AND p.word_id=w.id
+             )""",
+        (book_pattern(book), uid, book["id"]),
     )["c"]
 
 
@@ -126,10 +155,10 @@ def log_answer(conn, uid, p, action, value=None, correct=None, assessment=None):
     execute(
         conn,
         """INSERT INTO `answer_log`
-           (user_id, word_id, daily_plan_id, progress_id, round, kind,
+           (user_id, book_id, word_id, daily_plan_id, progress_id, round, kind,
             action, user_answer, correct, self_assessment)
-           VALUES (%s,%s,%s,%s,%s,'word',%s,%s,%s,%s)""",
-        (uid, p["word_id"], p["daily_plan_id"], p["id"], p["round"],
+           VALUES (%s,%s,%s,%s,%s,%s,'word',%s,%s,%s,%s)""",
+        (uid, p["book_id"], p["word_id"], p["daily_plan_id"], p["id"], p["round"],
          action, value, correct, assessment),
     )
 
@@ -180,8 +209,9 @@ def review_pass(conn, p):
         # Mirror the mastered flag onto every round row of this word.
         execute(
             conn,
-            "UPDATE `progress` SET stage='mastered' WHERE user_id=%s AND word_id=%s",
-            (p["user_id"], p["word_id"]),
+            """UPDATE `progress` SET stage='mastered'
+               WHERE user_id=%s AND book_id=%s AND word_id=%s""",
+            (p["user_id"], p["book_id"], p["word_id"]),
         )
     else:
         execute(
@@ -262,7 +292,7 @@ SELECT p.id, p.round, p.cycle_no, w.word, w.phonetic, w.translation, w.pos,
            AND g.round=1) AS cycle_size
 FROM `progress` p
 JOIN `word` w ON w.id=p.word_id
-WHERE p.user_id=%s AND p.daily_plan_id=%s
+WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
   AND p.round BETWEEN %s AND %s AND p.status='pending'
 ORDER BY p.cycle_no ASC, p.round ASC, p.id ASC
 LIMIT 1
@@ -277,7 +307,7 @@ SELECT p.id, p.review_stage, p.review_round, w.word, w.phonetic,
        w.translation, w.pos
 FROM `progress` p
 JOIN `word` w ON w.id = p.word_id
-WHERE p.user_id=%s AND p.round=5 AND p.status='done'
+WHERE p.user_id=%s AND p.book_id=%s AND p.round=5 AND p.status='done'
   AND p.stage='memorized' AND p.next_due_at <= CURDATE()
   AND p.review_round < 3
 ORDER BY p.review_round ASC, p.id ASC
@@ -285,35 +315,36 @@ LIMIT 1
 """
 
 
-def _learn_plan(conn, uid):
-    """Today's plan, preferring a still-in-progress ('learning') batch if one
-    exists (defensive against legacy same-day duplicate batches)."""
+def _learn_plan(conn, uid, book_id):
+    """Today's plan FOR THE CURRENT BOOK, preferring an in-progress batch."""
     plan = one(
         conn,
         """SELECT * FROM `daily_plan`
-           WHERE user_id=%s AND study_date=CURDATE() AND stage='learning'
+           WHERE user_id=%s AND book_id=%s AND study_date=CURDATE()
+             AND stage='learning'
            ORDER BY id DESC LIMIT 1""",
-        (uid,),
+        (uid, book_id),
     )
     if plan:
         return plan
     return one(
         conn,
         """SELECT * FROM `daily_plan`
-           WHERE user_id=%s AND study_date=CURDATE()
+           WHERE user_id=%s AND book_id=%s AND study_date=CURDATE()
            ORDER BY id DESC LIMIT 1""",
-        (uid,),
+        (uid, book_id),
     )
 
 
-def fetch_state(conn, uid, mode, plan_id=None):
+def fetch_state(conn, uid, mode, book_id, plan_id=None):
     """READ-ONLY state snapshot. Never writes — safe for GET /api/state."""
+    book = book_row(conn, book_id)
     if mode == "learn":
-        plan = _learn_plan(conn, uid)
+        plan = _learn_plan(conn, uid, book["id"])
         if not plan:
-            return {"kind": "need_plan", "pool": pool_size(conn, uid)}
+            return {"kind": "need_plan", "pool": pool_size(conn, uid, book)}
         counts = plan_totals(conn, uid, plan["id"], 1, 5)
-        row = one(conn, NEXT_ITEM_SQL, (uid, plan["id"], 1, 5))
+        row = one(conn, NEXT_ITEM_SQL, (uid, book["id"], plan["id"], 1, 5))
         if not row:
             return {"kind": "learning_done", "plan_id": plan["id"],
                     "word_count": plan["word_count"],
@@ -325,24 +356,24 @@ def fetch_state(conn, uid, mode, plan_id=None):
             conn,
             """SELECT COUNT(*) AS c FROM (
                  SELECT word_id FROM `progress`
-                 WHERE user_id=%s AND daily_plan_id=%s
+                 WHERE user_id=%s AND book_id=%s AND daily_plan_id=%s
                  GROUP BY word_id HAVING SUM(status='done') = COUNT(*)
                ) t""",
-            (uid, plan["id"]),
+            (uid, book["id"], plan["id"]),
         )["c"]
         payload["word_total"] = plan["word_count"]
         payload["word_done"] = int(word_done)
+        payload["book_id"] = book["id"]
         return payload
 
-    # Ebbinghaus review: next due word across all batches. No plan_id needed —
-    # review is word-level (each word has its own due date), not batch-level.
-    row = one(conn, REVIEW_ITEM_SQL, (uid,))
+    # Ebbinghaus review: next due word across all batches OF THIS BOOK.
+    row = one(conn, REVIEW_ITEM_SQL, (uid, book["id"]))
     if not row:
         return {"kind": "review_empty"}
     return review_item_payload(row)
 
 
-def advance_state(conn, uid, mode, plan_id=None):
+def advance_state(conn, uid, mode, book_id, plan_id=None):
     """Advance plan/stage transitions after a WRITE. Call only from write routes.
 
     Learn mode: when all 5 rounds of today's plan are done, mark the batch
@@ -354,10 +385,11 @@ def advance_state(conn, uid, mode, plan_id=None):
     if mode == "learn":
         if plan_id:
             plan = one(conn,
-                       "SELECT * FROM `daily_plan` WHERE id=%s AND user_id=%s",
-                       (plan_id, uid))
+                       """SELECT * FROM `daily_plan`
+                          WHERE id=%s AND user_id=%s AND book_id=%s""",
+                       (plan_id, uid, book_id))
         else:
-            plan = _learn_plan(conn, uid)
+            plan = _learn_plan(conn, uid, book_id)
         if not plan or plan["stage"] != "learning":
             return
         if plan_totals(conn, uid, plan["id"], 1, 5)["done"] < plan["word_count"] * 5:
@@ -403,6 +435,10 @@ class HeartbeatIn(BaseModel):
 
 class RevealIn(BaseModel):
     article_id: int
+
+
+class BookIn(BaseModel):
+    book_id: int
 
 
 class ExamAnswerIn(BaseModel):
@@ -483,11 +519,68 @@ def llm_test_model(user=Depends(require_admin)):
     return test_model()
 
 
+@app.get("/api/books")
+def list_books(user=Depends(current_user)):
+    """The four shelves with per-book word/mastery counts for this user."""
+    with transaction() as conn:
+        books = query(
+            conn,
+            """SELECT id, code, name, exam_type, tag_filter, description
+               FROM `book` WHERE enabled=1 ORDER BY sort_no, id""",
+        )
+        for b in books:
+            b["word_count"] = one(
+                conn,
+                """SELECT COUNT(*) AS c FROM `word`
+                   WHERE CONCAT(' ', IFNULL(`tag`,''), ' ') LIKE %s""",
+                (book_pattern(b),),
+            )["c"]
+            b["learned"] = one(
+                conn,
+                """SELECT COUNT(DISTINCT word_id) AS c FROM `progress`
+                   WHERE user_id=%s AND book_id=%s""",
+                (user["id"], b["id"]),
+            )["c"]
+            b["current"] = (b["id"] == user["book_id"])
+        return {"books": books, "current_book_id": user["book_id"]}
+
+
+@app.get("/api/book/current")
+def get_current_book(user=Depends(current_user)):
+    with transaction() as conn:
+        book = book_row(conn, user["book_id"])
+        return {"book": {k: book[k] for k in
+                         ("id", "code", "name", "exam_type", "tag_filter", "description")}}
+
+
+@app.post("/api/book/current")
+def switch_book(req: BookIn, user=Depends(current_user)):
+    """Persist the chosen shelf on the user row; affects all later requests."""
+    with transaction() as conn:
+        book = one(conn, "SELECT * FROM `book` WHERE id=%s AND enabled=1", (req.book_id,))
+        if not book:
+            raise HTTPException(status_code=404, detail="找不到这本书")
+        changed = execute(conn,
+                          "UPDATE `user` SET current_book_id=%s WHERE id=%s",
+                          (book["id"], user["id"]))
+        if not changed:
+            # Admin identities live in the `admin` table, not `user`.
+            raise HTTPException(status_code=400, detail="当前账号不支持切换书籍")
+        return {"ok": True, "book_id": book["id"], "book_name": book["name"]}
+
+
 @app.get("/api/pool")
 def pool(user=Depends(current_user)):
     with transaction() as conn:
-        total = one(conn, "SELECT COUNT(*) AS c FROM `word`")["c"]
-        return {"available": pool_size(conn, user["id"]), "total": total}
+        book = book_row(conn, user["book_id"])
+        total = one(
+            conn,
+            """SELECT COUNT(*) AS c FROM `word`
+               WHERE CONCAT(' ', IFNULL(`tag`,''), ' ') LIKE %s""",
+            (book_pattern(book),),
+        )["c"]
+        return {"available": pool_size(conn, user["id"], book), "total": total,
+                "book_id": book["id"], "book_name": book["name"]}
 
 
 @app.get("/api/state")
@@ -496,21 +589,24 @@ def state(mode: str = "learn", plan_id: int | None = None,
     if mode not in ("learn", "review"):
         raise HTTPException(status_code=400, detail="mode 只能是 learn 或 review")
     with transaction() as conn:
-        return fetch_state(conn, user["id"], mode, plan_id)
+        return fetch_state(conn, user["id"], mode, user["book_id"], plan_id)
 
 
 @app.post("/api/plan")
 def create_plan(req: PlanIn, user=Depends(current_user)):
     uid = user["id"]
     with transaction() as conn:
+        book = book_row(conn, user["book_id"])
         existing = one(
             conn,
-            "SELECT id FROM `daily_plan` WHERE user_id=%s AND study_date=CURDATE()",
-            (uid,),
+            """SELECT id FROM `daily_plan`
+               WHERE user_id=%s AND book_id=%s AND study_date=CURDATE()""",
+            (uid, book["id"]),
         )
         if existing:
-            raise HTTPException(status_code=409, detail="今天已经建过学习计划了")
-        available = pool_size(conn, uid)
+            raise HTTPException(status_code=409,
+                                detail=f"今天在「{book['name']}」已经建过学习计划了")
+        available = pool_size(conn, uid, book)
         if req.count > available:
             raise HTTPException(
                 status_code=400,
@@ -519,31 +615,33 @@ def create_plan(req: PlanIn, user=Depends(current_user)):
         words = query(
             conn,
             """SELECT id FROM `word` w
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM `progress` p WHERE p.user_id=%s AND p.word_id=w.id
-               )
+               WHERE CONCAT(' ', IFNULL(w.tag,''), ' ') LIKE %s
+                 AND NOT EXISTS (
+                   SELECT 1 FROM `progress` p
+                   WHERE p.user_id=%s AND p.book_id=%s AND p.word_id=w.id
+                 )
                ORDER BY w.id ASC LIMIT %s""",
-            (uid, req.count),
+            (book_pattern(book), uid, book["id"], req.count),
         )
         cycle_count = (req.count + 4) // 5
         execute(
             conn,
             """INSERT INTO `daily_plan`
-               (user_id, study_date, word_count, cycle_count, stage)
-               VALUES (%s, CURDATE(), %s, %s, 'learning')""",
-            (uid, req.count, cycle_count),
+               (user_id, book_id, study_date, word_count, cycle_count, stage)
+               VALUES (%s, %s, CURDATE(), %s, %s, 'learning')""",
+            (uid, book["id"], req.count, cycle_count),
         )
         plan_id = one(conn, "SELECT LAST_INSERT_ID() AS id")["id"]
         rows = [
-            (uid, w["id"], plan_id, i // 5 + 1, r, "pending")
+            (uid, book["id"], w["id"], plan_id, i // 5 + 1, r, "pending")
             for i, w in enumerate(words)
             for r in range(1, 6)
         ]
         with conn.cursor() as cur:
             cur.executemany(
                 """INSERT INTO `progress`
-                   (user_id, word_id, daily_plan_id, cycle_no, round, status)
-                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                   (user_id, book_id, word_id, daily_plan_id, cycle_no, round, status)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                 rows,
             )
         return {
@@ -551,7 +649,9 @@ def create_plan(req: PlanIn, user=Depends(current_user)):
             "study_date": str(one(conn, "SELECT CURDATE() AS d")["d"]),
             "word_count": req.count,
             "cycle_count": cycle_count,
-            "state": fetch_state(conn, uid, "learn"),
+            "book_id": book["id"],
+            "book_name": book["name"],
+            "state": fetch_state(conn, uid, "learn", book["id"]),
         }
 
 
@@ -605,8 +705,8 @@ def _answer_learn(conn, uid, p, req):
     else:
         raise HTTPException(status_code=400, detail="action 与当前轮次不匹配")
 
-    advance_state(conn, uid, "learn", p["daily_plan_id"])
-    result["state"] = fetch_state(conn, uid, "learn")
+    advance_state(conn, uid, "learn", p["book_id"], p["daily_plan_id"])
+    result["state"] = fetch_state(conn, uid, "learn", p["book_id"])
     return result
 
 
@@ -667,7 +767,7 @@ def _answer_review(conn, uid, p, req):
             result["answer"] = p["spelling"]
     else:
         raise HTTPException(status_code=400, detail="复习状态异常")
-    result["state"] = fetch_state(conn, uid, "review")
+    result["state"] = fetch_state(conn, uid, "review", p["book_id"])
     return result
 
 
@@ -696,7 +796,7 @@ def answer(req: AnswerIn, user=Depends(current_user)):
             "duplicate": True, "correct": None, "answer": None,
             "reveal": False, "standard_answer": None, "state": None,
         }
-        result["state"] = fetch_state(conn, uid, "learn")
+        result["state"] = fetch_state(conn, uid, "learn", p["book_id"])
         return result
 
 
@@ -705,26 +805,29 @@ def review_stats(user=Depends(current_user)):
     """Ebbinghaus review stats: due-now / in-pool / mastered counts."""
     uid = user["id"]
     with transaction() as conn:
+        book = book_row(conn, user["book_id"])
         due = one(
             conn,
             """SELECT COUNT(*) AS c FROM `progress`
-               WHERE user_id=%s AND round=5 AND status='done'
+               WHERE user_id=%s AND book_id=%s AND round=5 AND status='done'
                  AND stage='memorized' AND next_due_at <= CURDATE()""",
-            (uid,),
+            (uid, book["id"]),
         )["c"]
         pool = one(
             conn,
             """SELECT COUNT(*) AS c FROM `progress`
-               WHERE user_id=%s AND round=5 AND status='done' AND stage='memorized'""",
-            (uid,),
+               WHERE user_id=%s AND book_id=%s AND round=5 AND status='done'
+                 AND stage='memorized'""",
+            (uid, book["id"]),
         )["c"]
         mastered = one(
             conn,
             """SELECT COUNT(DISTINCT word_id) AS c FROM `progress`
-               WHERE user_id=%s AND stage='mastered'""",
-            (uid,),
+               WHERE user_id=%s AND book_id=%s AND stage='mastered'""",
+            (uid, book["id"]),
         )["c"]
-        return {"due": int(due), "pool": int(pool), "mastered": int(mastered)}
+        return {"due": int(due), "pool": int(pool), "mastered": int(mastered),
+                "book_id": book["id"], "book_name": book["name"]}
 
 
 # ---------------------------------------------------------------- study dashboard
@@ -756,9 +859,10 @@ def study_today(user=Depends(current_user)):
         learned = one(
             conn,
             """SELECT COUNT(DISTINCT word_id) AS c FROM `progress`
-               WHERE user_id=%s AND stage IN ('memorized','mastered')
+               WHERE user_id=%s AND book_id=%s
+                 AND stage IN ('memorized','mastered')
                  AND DATE(updated_at) = CURDATE()""",
-            (uid,),
+            (uid, user["book_id"]),
         )
     return {
         "seconds": int(seconds["seconds"]) if seconds else 0,
@@ -775,18 +879,68 @@ def mark_known(req: KnownIn, user=Depends(current_user)):
     """
     uid = user["id"]
     with transaction() as conn:
-        p = one(conn, "SELECT word_id, daily_plan_id FROM `progress` WHERE id=%s AND user_id=%s",
-                (req.progress_id, uid))
+        p = one(
+            conn,
+            """SELECT word_id, daily_plan_id, book_id FROM `progress`
+               WHERE id=%s AND user_id=%s""",
+            (req.progress_id, uid),
+        )
         if not p:
             raise HTTPException(status_code=404, detail="找不到该单词")
         execute(conn,
-                "UPDATE `progress` SET status='done', stage='mastered' WHERE user_id=%s AND word_id=%s",
-                (uid, p["word_id"]))
+                """UPDATE `progress` SET status='done', stage='mastered'
+                   WHERE user_id=%s AND book_id=%s AND word_id=%s""",
+                (uid, p["book_id"], p["word_id"]))
         execute(conn,
-                "UPDATE `progress` SET review_round=0, review_stage=0, next_due_at=NULL WHERE user_id=%s AND word_id=%s",
-                (uid, p["word_id"]))
-        advance_state(conn, uid, "learn", p["daily_plan_id"])
+                """UPDATE `progress`
+                   SET review_round=0, review_stage=0, next_due_at=NULL
+                   WHERE user_id=%s AND book_id=%s AND word_id=%s""",
+                (uid, p["book_id"], p["word_id"]))
+        advance_state(conn, uid, "learn", p["book_id"], p["daily_plan_id"])
         return {"ok": True}
+
+
+# ---------------------------------------------------------------- scenario practice (A + C)
+
+@app.get("/api/scenario/bundle")
+def scenario_bundle(limit: int = 5, user=Depends(current_user)):
+    """Words of the current book plus cached micro-sentences and scene cards.
+
+    Scenario content is generated once and cached; it never touches progress.
+    """
+    if limit < 1 or limit > 10:
+        raise HTTPException(status_code=400, detail="limit 需在 1～10 之间")
+    with transaction() as conn:
+        book = book_row(conn, user["book_id"])
+        words = scenario_service.scenario_words(conn, user["id"], book["id"], limit)
+        items = []
+        for w in words:
+            ex = scenario_service.ensure_example(conn, w["id"], book["id"], book)
+            sc = scenario_service.ensure_scene(conn, w["id"], book["id"], book)
+            items.append({"id": w["id"], "word": w["word"],
+                          "translation": w["translation"], "pos": w["pos"],
+                          "example": ex, "scene": sc})
+        return {"book_id": book["id"], "book_name": book["name"], "items": items}
+
+
+@app.get("/api/scenario/example")
+def scenario_example(word_id: int, user=Depends(current_user)):
+    with transaction() as conn:
+        book = book_row(conn, user["book_id"])
+        row = scenario_service.ensure_example(conn, word_id, book["id"], book)
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到这个单词")
+        return row
+
+
+@app.get("/api/scenario/scene")
+def scenario_scene(word_id: int, user=Depends(current_user)):
+    with transaction() as conn:
+        book = book_row(conn, user["book_id"])
+        row = scenario_service.ensure_scene(conn, word_id, book["id"], book)
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到这个单词")
+        return row
 
 
 # ---------------------------------------------------------------- daily articles
@@ -794,7 +948,9 @@ def mark_known(req: KnownIn, user=Depends(current_user)):
 @app.get("/api/articles/batches")
 def article_batches(user=Depends(current_user)):
     with transaction() as conn:
-        return {"batches": daily_batches(conn, user["id"])}
+        book = book_row(conn, user["book_id"])
+        return {"batches": daily_batches(conn, user["id"], book["id"]),
+                "book_id": book["id"], "book_name": book["name"]}
 
 
 @app.get("/api/articles/scenes")
@@ -806,7 +962,9 @@ def article_scenes():
 @app.get("/api/articles/daily")
 def articles_daily(plan_id: int, scene: str = "default", user=Depends(current_user)):
     with transaction() as conn:
-        articles, err = ensure_daily_articles(conn, user["id"], plan_id, scene)
+        book = book_row(conn, user["book_id"])
+        articles, err = ensure_daily_articles(
+            conn, user["id"], plan_id, scene, book["id"], book)
         if err:
             raise HTTPException(status_code=400, detail=err)
         payloads = [article_payload(conn, a) for a in articles]
@@ -828,8 +986,9 @@ def reveal_article(req: RevealIn, user=Depends(current_user)):
     with transaction() as conn:
         art = one(
             conn,
-            """SELECT * FROM `article` WHERE id=%s AND user_id=%s""",
-            (req.article_id, user["id"]),
+            """SELECT * FROM `article`
+               WHERE id=%s AND user_id=%s AND book_id=%s""",
+            (req.article_id, user["id"], user["book_id"]),
         )
         if not art:
             raise HTTPException(status_code=404, detail="找不到这篇短文")
@@ -862,8 +1021,9 @@ def reading_weeks(user=Depends(current_user)):
         rows = query(
             conn,
             """SELECT DISTINCT week_key FROM `article`
-               WHERE user_id=%s AND kind='weekly' ORDER BY week_key DESC""",
-            (user["id"],),
+               WHERE user_id=%s AND book_id=%s AND kind='weekly'
+               ORDER BY week_key DESC""",
+            (user["id"], user["book_id"]),
         )
         keys = [r["week_key"] for r in rows]
         current = week_key_of(date.today())
@@ -880,9 +1040,11 @@ def publish_now(user=Depends(current_user)):
     """
     key = week_key_of(date.today())
     with transaction() as conn:
-        result = ensure_weekly(conn, user["id"], key, force=True)
+        book = book_row(conn, user["book_id"])
+        result = ensure_weekly(conn, user["id"], key, force=True,
+                               book_id=book["id"], book=book)
         return {"ok": True, "week_key": key, "status": result["status"],
-                "article_count": len(result["articles"])}
+                "book_id": book["id"], "article_count": len(result["articles"])}
 
 
 @app.get("/api/reading")
@@ -891,7 +1053,8 @@ def reading(week_key: str = "", user=Depends(current_user)):
     if not re.fullmatch(r"\d{4}-W\d{2}", key):
         raise HTTPException(status_code=400, detail="周次格式应为 2026-W45")
     with transaction() as conn:
-        return reading_payload(conn, user["id"], key)
+        book = book_row(conn, user["book_id"])
+        return reading_payload(conn, user["id"], key, book["id"], book)
 
 
 @app.post("/api/reading/answer")
@@ -1043,23 +1206,26 @@ def chat_practice(req: ChatPracticeIn, user=Depends(current_user)):
     if req.source_type not in ("article", "question", "general"):
         raise HTTPException(status_code=400, detail="对话来源不合法")
     with transaction() as conn:
+        book = book_row(conn, user["book_id"])
         if req.session_id:
             session = chat_service.get_session(conn, req.session_id, user["id"])
             if not session:
                 raise HTTPException(status_code=404, detail="找不到这次对话")
             sid = req.session_id
+            book = book_row(conn, session.get("book_id") or book["id"])
         else:
             context = chat_service.build_context(conn, req.source_type,
                                                  req.source_id, user["id"])
             if req.source_type in ("article", "question") and context is None:
                 raise HTTPException(status_code=404, detail="找不到这篇内容或无权访问")
             sid = chat_service.start_session(conn, user["id"], req.source_type,
-                                             req.source_id, context)
+                                             req.source_id, context, book["id"])
             session = chat_service.get_session(conn, sid, user["id"])
         label = ("选词填空" if req.kind == "cloze" else "阅读理解")
-        intent = f"出一篇考研风格{label}题"
+        intent = f"出一篇{book['exam_type']}风格{label}题"
         try:
-            card = chat_service.generate_practice_card(conn, user["id"], req.kind)
+            card = chat_service.generate_practice_card(
+                conn, user["id"], req.kind, book["id"], book)
             result = chat_service.send_card(conn, session, user["id"], intent, card)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -1087,18 +1253,19 @@ def chat_start(req: ChatStartIn, user=Depends(current_user)):
     if req.source_type not in ("article", "question", "general"):
         raise HTTPException(status_code=400, detail="对话来源不合法")
     with transaction() as conn:
+        book = book_row(conn, user["book_id"])
         context = chat_service.build_context(conn, req.source_type, req.source_id,
                                              user["id"])
         if req.source_type in ("article", "question") and context is None:
             raise HTTPException(status_code=404, detail="找不到这篇内容或无权访问")
         sid = chat_service.start_session(conn, user["id"], req.source_type,
-                                         req.source_id, context)
+                                         req.source_id, context, book["id"])
         first = None
         if req.first_question.strip():
             session = chat_service.get_session(conn, sid, user["id"])
             try:
                 first = chat_service.reply(conn, session, user["id"],
-                                           req.first_question)
+                                           req.first_question, book["id"], book)
             except (GenerationFailed, NoProvider) as exc:
                 raise HTTPException(status_code=502, detail=str(exc))
             except ValueError as exc:
@@ -1127,8 +1294,11 @@ def chat_ask(req: ChatAskIn, user=Depends(current_user)):
         session = chat_service.get_session(conn, req.session_id, user["id"])
         if not session:
             raise HTTPException(status_code=404, detail="找不到这次对话")
+        # Keep the shelf fixed to the session's book even if the user switches.
+        book = book_row(conn, session.get("book_id") or user["book_id"])
         try:
-            result = chat_service.reply(conn, session, user["id"], req.question)
+            result = chat_service.reply(conn, session, user["id"], req.question,
+                                        book["id"], book)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except (GenerationFailed, NoProvider) as exc:

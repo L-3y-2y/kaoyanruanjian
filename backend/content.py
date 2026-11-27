@@ -80,6 +80,18 @@ _SENT_GENERIC = [
 SENTENCES = _SENT_GENERIC  # kept for backward compatibility with existing imports
 
 
+def book_context(book):
+    """Prompt fragment: keep article difficulty and exam style on the shelf."""
+    if not book:
+        return ""
+    exam = book.get("exam_type") or "考研英语"
+    return (
+        f"\nThe learner is preparing for {exam}. Match the reading difficulty, "
+        f"sentence length and vocabulary level to {exam}; do not mention the "
+        f"exam name inside the passage or questions."
+    )
+
+
 # ---------------------------------------------------------------- word scanning
 
 def _exchange_forms(row):
@@ -225,7 +237,7 @@ def _local_article(words, seq):
     return "\n".join(lines)
 
 
-def _article_prompt(words, missing=None, scene="default"):
+def _article_prompt(words, missing=None, scene="default", book=None):
     word_list = "\n".join(
         f'- {r["word"].strip()} [{r.get("pos") or "word"}]: {r.get("translation") or ""}'
         for r in words
@@ -243,6 +255,7 @@ def _article_prompt(words, missing=None, scene="default"):
     if scene and scene != "default":
         instruction += (" Set the passage in this scene: " +
                         SCENES.get(scene, SCENES["default"]) + ".")
+    instruction += book_context(book)
     if missing:
         instruction += (
             "\nThe previous draft missed these words: " + ", ".join(missing) +
@@ -258,9 +271,9 @@ def _article_valid(data):
     return isinstance(body, str) and len(body.split()) >= 60
 
 
-def _llm_article(words, seq, scene="default"):
+def _llm_article(words, seq, scene="default", book=None):
     """Return (title, body, provider). Coverage uses the SAME lemma map as marking."""
-    data, provider = generate_json(_article_prompt(words, scene=scene),
+    data, provider = generate_json(_article_prompt(words, scene=scene, book=book),
                                    validator=_article_valid, max_tokens=900)
     body = data["body"].strip()
     expected = {r["id"] for r in words}
@@ -271,8 +284,9 @@ def _llm_article(words, seq, scene="default"):
     missing_ids = expected - covered(body)
     if missing_ids:
         missing = [r["word"] for r in words if r["id"] in missing_ids]
-        data2, provider2 = generate_json(_article_prompt(words, missing, scene),
-                                         validator=_article_valid, max_tokens=900)
+        data2, provider2 = generate_json(
+            _article_prompt(words, missing, scene, book),
+            validator=_article_valid, max_tokens=900)
         body2 = data2["body"].strip()
         if expected <= covered(body2):
             return (data2.get("title") or "").strip(), body2, provider2
@@ -283,7 +297,8 @@ def _llm_article(words, seq, scene="default"):
 
 
 def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
-                  mode, uncovered, publish_at=None, deadline=None, scene="default"):
+                  mode, uncovered, publish_at=None, deadline=None, scene="default",
+                  book_id=1, book=None):
     # All inputs are already read by the caller. Release the read transaction
     # before the (slow) LLM call so the connection/locks are not held while we
     # wait on the network. The UNIQUE article keys below make the write idempotent.
@@ -291,7 +306,7 @@ def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
     llm_title = ""
     if configured():
         try:
-            llm_title, body, provider = _llm_article(words, seq, scene)
+            llm_title, body, provider = _llm_article(words, seq, scene, book)
         except (GenerationFailed, NoProvider):
             body, provider = _local_article(words, seq), "local"
     else:
@@ -303,11 +318,11 @@ def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
         execute(
             conn,
             """INSERT INTO `article`
-               (user_id, kind, daily_plan_id, week_key, seq, title, body, mode, scene,
-                covered_words, total_words, uncovered, revealed, publish_at,
-                deadline, generator)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,%s)""",
-            (user_id, kind, plan_id, week_key, seq, title, body, mode, scene,
+               (user_id, book_id, kind, daily_plan_id, week_key, seq, title, body,
+                mode, scene, covered_words, total_words, uncovered, revealed,
+                publish_at, deadline, generator)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,%s)""",
+            (user_id, book_id, kind, plan_id, week_key, seq, title, body, mode, scene,
              len(words), len(words) + len(uncovered),
              json.dumps(uncovered, ensure_ascii=False), publish_at, deadline, provider),
         )
@@ -364,14 +379,15 @@ def regenerate_article(conn, *, user_id, article_id):
         conn,
         """SELECT w.id, w.word, w.translation, w.pos, w.exchange
            FROM `progress` p JOIN `word` w ON w.id=p.word_id
-           WHERE p.user_id=%s AND p.daily_plan_id=%s
+           WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
            GROUP BY w.id ORDER BY MIN(p.id)""",
-        (user_id, plan_id),
+        (user_id, art["book_id"], plan_id),
     )
     if not rows:
         raise KeyError("batch-words-missing")
+    book = one(conn, "SELECT * FROM `book` WHERE id=%s", (art["book_id"],))
     detach_for_llm(conn)  # inputs read; do not hold locks during the LLM call
-    title, body, provider = _llm_article(rows, art["seq"], scene)
+    title, body, provider = _llm_article(rows, art["seq"], scene, book)
     if not title:
         title = f"第 {art['seq']} 篇 · {len(rows)} 词短文"
     execute(
@@ -398,41 +414,44 @@ def regenerate_article(conn, *, user_id, article_id):
 
 # ---------------------------------------------------------------- daily articles
 
-def daily_batches(conn, user_id):
+def daily_batches(conn, user_id, book_id=1):
     rows = query(
         conn,
         """SELECT dp.id AS plan_id, dp.study_date, dp.word_count, dp.stage,
                   (SELECT COUNT(*) FROM `article` a
-                    WHERE a.user_id=dp.user_id AND a.kind='daily'
-                      AND a.daily_plan_id=dp.id) AS article_count
+                    WHERE a.user_id=dp.user_id AND a.book_id=dp.book_id
+                      AND a.kind='daily' AND a.daily_plan_id=dp.id) AS article_count
            FROM `daily_plan` dp
-           WHERE dp.user_id=%s AND dp.stage IN ('memorized','mastered')
+           WHERE dp.user_id=%s AND dp.book_id=%s
+             AND dp.stage IN ('memorized','mastered')
            ORDER BY dp.study_date ASC, dp.id ASC""",
-        (user_id,),
+        (user_id, book_id),
     )
     for row in rows:
         row["study_date"] = str(row["study_date"])
     return rows
 
 
-def _plan_words(conn, user_id, plan_id):
+def _plan_words(conn, user_id, plan_id, book_id=1):
     return query(
         conn,
         """SELECT DISTINCT w.id, w.word, w.phonetic, w.translation, w.pos,
                   w.exchange, p.wrong_count
            FROM `progress` p JOIN `word` w ON w.id=p.word_id
-           WHERE p.user_id=%s AND p.daily_plan_id=%s
+           WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
            ORDER BY w.id ASC""",
-        (user_id, plan_id),
+        (user_id, book_id, plan_id),
     )
 
 
-def ensure_daily_articles(conn, user_id, plan_id, scene="default"):
+def ensure_daily_articles(conn, user_id, plan_id, scene="default",
+                          book_id=1, book=None):
     """Generate once per mastered batch. Repeated calls return the SAME articles."""
     plan = one(
         conn,
-        "SELECT * FROM `daily_plan` WHERE id=%s AND user_id=%s",
-        (plan_id, user_id),
+        """SELECT * FROM `daily_plan`
+           WHERE id=%s AND user_id=%s AND book_id=%s""",
+        (plan_id, user_id, book_id),
     )
     if not plan:
         return None, "找不到该日期批次"
@@ -440,13 +459,13 @@ def ensure_daily_articles(conn, user_id, plan_id, scene="default"):
         return None, "短文只在学完当批次的 5 轮后才出现"
     existing = query(
         conn,
-        """SELECT * FROM `article` WHERE user_id=%s AND kind='daily'
-           AND daily_plan_id=%s ORDER BY seq ASC""",
-        (user_id, plan_id),
+        """SELECT * FROM `article` WHERE user_id=%s AND book_id=%s
+           AND kind='daily' AND daily_plan_id=%s ORDER BY seq ASC""",
+        (user_id, book_id, plan_id),
     )
     if existing:
         return existing, None
-    words = _plan_words(conn, user_id, plan_id)
+    words = _plan_words(conn, user_id, plan_id, book_id)
     if not words:
         return None, "这个批次没有单词记录"
     capacity = WORDS_PER_ARTICLE * MAX_ARTICLES
@@ -470,15 +489,15 @@ def ensure_daily_articles(conn, user_id, plan_id, scene="default"):
     chunks = [chosen[i:i + WORDS_PER_ARTICLE]
               for i in range(0, len(chosen), WORDS_PER_ARTICLE)]
     for seq, chunk in enumerate(chunks, start=1):
-        write_article(conn, user_id=user_id, kind="daily", plan_id=plan_id,
-                      week_key=None, seq=seq, words=chunk, mode=mode,
-                      uncovered=uncovered,
+        write_article(conn, user_id=user_id, book_id=book_id, book=book,
+                      kind="daily", plan_id=plan_id, week_key=None, seq=seq,
+                      words=chunk, mode=mode, uncovered=uncovered,
                       scene=scene if scene in SCENES else "default")
     return query(
         conn,
-        """SELECT * FROM `article` WHERE user_id=%s AND kind='daily'
-           AND daily_plan_id=%s ORDER BY seq ASC""",
-        (user_id, plan_id),
+        """SELECT * FROM `article` WHERE user_id=%s AND book_id=%s
+           AND kind='daily' AND daily_plan_id=%s ORDER BY seq ASC""",
+        (user_id, book_id, plan_id),
     ), None
 
 
@@ -594,7 +613,7 @@ def week_bounds(week_key):
     return monday, monday + timedelta(days=6), friday, sunday
 
 
-def week_words(conn, user_id, week_key):
+def week_words(conn, user_id, week_key, book_id=1):
     monday, sunday, _, _ = week_bounds(week_key)
     rows = query(
         conn,
@@ -603,10 +622,10 @@ def week_words(conn, user_id, week_key):
            FROM `daily_plan` dp
            JOIN `progress` p ON p.daily_plan_id=dp.id AND p.user_id=dp.user_id
            JOIN `word` w ON w.id=p.word_id
-           WHERE dp.user_id=%s AND dp.stage='mastered'
+           WHERE dp.user_id=%s AND dp.book_id=%s AND dp.stage='mastered'
              AND dp.study_date BETWEEN %s AND %s
            ORDER BY w.id ASC""",
-        (user_id, monday, sunday),
+        (user_id, book_id, monday, sunday),
     )
     if not rows:
         # MySQL 8 rejects ORDER BY a column that is not in a DISTINCT select
@@ -620,10 +639,10 @@ def week_words(conn, user_id, week_key):
                WHERE w.id IN (
                  SELECT p.word_id FROM `progress` p
                  JOIN `daily_plan` dp ON dp.id=p.daily_plan_id
-                 WHERE dp.user_id=%s AND dp.stage='mastered'
+                 WHERE dp.user_id=%s AND dp.book_id=%s AND dp.stage='mastered'
                )
                ORDER BY w.id ASC LIMIT 40""",
-            (user_id,),
+            (user_id, book_id),
         )
     return rows
 
@@ -704,10 +723,11 @@ def _template_questions(article, words):
     return items
 
 
-def _question_prompt(article, words):
+def _question_prompt(article, words, book=None):
     word_list = ", ".join(r["word"].strip() for r in words)
+    exam = (book or {}).get("exam_type") or "考研英语"
     return (
-        "You are an experienced Chinese postgraduate entrance exam English teacher. "
+        f"You are an experienced {exam} English teacher. "
         "Read the passage and write 5 exam-style questions. Return ONLY a JSON object "
         "with one key \"questions\" containing exactly 5 objects, one of each qtype: "
         "main_idea, vocabulary, detail, inference, subjective. Each object has: "
@@ -717,8 +737,9 @@ def _question_prompt(article, words):
         "\"reference_answer\" (Chinese key points for grading). For vocabulary, "
         "detail and subjective, also include \"word\" copied exactly from the target "
         "word list. Distractors must be plausible and related to the passage; do not "
-        "reveal the answer in the stem. Do not include any text outside the JSON.\n\n"
-        f"Target words: {word_list}\n\nPassage:\n{article['body']}"
+        "reveal the answer in the stem. Do not include any text outside the JSON."
+        + book_context(book)
+        + f"\n\nTarget words: {word_list}\n\nPassage:\n{article['body']}"
     )
 
 
@@ -748,8 +769,8 @@ def _questions_valid(data):
     return True
 
 
-def _llm_questions(article, words):
-    data, _provider = generate_json(_question_prompt(article, words),
+def _llm_questions(article, words, book=None):
+    data, _provider = generate_json(_question_prompt(article, words, book),
                                     validator=_questions_valid, max_tokens=1600)
     items = []
     lower = {r["word"].strip().lower(): r["id"] for r in words}
@@ -772,7 +793,7 @@ def _llm_questions(article, words):
     return items
 
 
-def _questions_for(conn, article_id, user_id, article, words):
+def _questions_for(conn, article_id, user_id, article, words, book=None):
     """Prefer LLM-generated questions; keep the old template set as fallback."""
     # The article row is already written; commit it and release the lock before
     # the question-generation network call.
@@ -780,7 +801,7 @@ def _questions_for(conn, article_id, user_id, article, words):
     items = None
     if configured():
         try:
-            items = _llm_questions(article, words)
+            items = _llm_questions(article, words, book)
         except (GenerationFailed, NoProvider, ValueError, KeyError, TypeError):
             items = None
     if items is None:
@@ -803,16 +824,16 @@ def _questions_for(conn, article_id, user_id, article, words):
         )
 
 
-def ensure_weekly(conn, user_id, week_key=None, force=False):
-    """Friday-evening publish + open-time fallback (B5)."""
+def ensure_weekly(conn, user_id, week_key=None, force=False, book_id=1, book=None):
+    """Friday-evening publish + open-time fallback (B5), scoped to one book."""
     now = datetime.now()
     key = week_key or week_key_of(now.date())
     monday, sunday, publish_at, deadline = week_bounds(key)
     existing = query(
         conn,
-        """SELECT * FROM `article` WHERE user_id=%s AND kind='weekly'
-           AND week_key=%s ORDER BY seq ASC""",
-        (user_id, key),
+        """SELECT * FROM `article` WHERE user_id=%s AND book_id=%s
+           AND kind='weekly' AND week_key=%s ORDER BY seq ASC""",
+        (user_id, book_id, key),
     )
     if existing:
         return {"status": "published", "week_key": key,
@@ -822,12 +843,16 @@ def ensure_weekly(conn, user_id, week_key=None, force=False):
         return {"status": "not_published", "week_key": key,
                 "publish_at": str(publish_at), "deadline": str(deadline),
                 "articles": [], "locked": True}
-    words = week_words(conn, user_id, key)
+    words = week_words(conn, user_id, key, book_id)
     if not words:
+        tag = (book or {}).get("tag_filter") or "ky"
         words = query(
             conn,
-            "SELECT id, word, phonetic, translation, pos, exchange, 0 AS wrong_count "
-            "FROM `word` ORDER BY id ASC LIMIT 12",
+            """SELECT id, word, phonetic, translation, pos, exchange, 0 AS wrong_count
+               FROM `word`
+               WHERE CONCAT(' ', IFNULL(`tag`,''), ' ') LIKE %s
+               ORDER BY id ASC LIMIT 12""",
+            ("% " + tag + " %",),
         )
     capacity = WORDS_PER_ARTICLE * 2
     mode, uncovered, chosen = "full", [], words
@@ -840,23 +865,23 @@ def ensure_weekly(conn, user_id, week_key=None, force=False):
     while len(halves) < 2:
         halves.append(chosen[:WORDS_PER_ARTICLE])
     for seq, chunk in enumerate(halves[:2], start=1):
-        aid = write_article(conn, user_id=user_id, kind="weekly", plan_id=None,
-                            week_key=key, seq=seq, words=chunk, mode=mode,
-                            uncovered=uncovered, publish_at=publish_at,
-                            deadline=deadline)
+        aid = write_article(conn, user_id=user_id, book_id=book_id, book=book,
+                            kind="weekly", plan_id=None, week_key=key, seq=seq,
+                            words=chunk, mode=mode, uncovered=uncovered,
+                            publish_at=publish_at, deadline=deadline)
         art = one(conn, "SELECT * FROM `article` WHERE id=%s", (aid,))
-        _questions_for(conn, aid, user_id, art, chunk)
+        _questions_for(conn, aid, user_id, art, chunk, book)
     return {"status": "published", "week_key": key,
             "publish_at": str(publish_at), "deadline": str(deadline),
             "articles": query(
                 conn,
-                """SELECT * FROM `article` WHERE user_id=%s AND kind='weekly'
-                   AND week_key=%s ORDER BY seq ASC""",
-                (user_id, key)), "locked": False}
+                """SELECT * FROM `article` WHERE user_id=%s AND book_id=%s
+                   AND kind='weekly' AND week_key=%s ORDER BY seq ASC""",
+                (user_id, book_id, key)), "locked": False}
 
 
-def reading_payload(conn, user_id, week_key):
-    result = ensure_weekly(conn, user_id, week_key)
+def reading_payload(conn, user_id, week_key, book_id=1, book=None):
+    result = ensure_weekly(conn, user_id, week_key, book_id=book_id, book=book)
     if result["status"] != "published":
         return result
     now = datetime.now()

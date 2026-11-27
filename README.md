@@ -1,6 +1,6 @@
-# 考研背单词软件 · 完整版
+# 背单词软件 · 完整版（考研 / 四六级 / 高考）
 
-按 `docs/需求与设计骨架.md`（v0.6.7）实现的**前后端完整版**，阶段 0～5 全部落地。
+按 `docs/需求与设计骨架.md`（v0.6.7）实现的**前后端完整版**，阶段 0～5 全部落地；后来又加入**多书籍切换**与**情景式背词 A/B/C**。
 技术栈按文档定稿：**Vue 3 + Vite / Python + FastAPI / MySQL 8.0 / 浏览器 speechSynthesis**。
 
 所有运行时数据都在同一个库 **`kaoyanruanjian`** 里，用的是只被授权了这一个库的账号 `kaoyan_app`；数据库凭据与大模型 Key 只在 `backend/.env`，不进 Git、不下发浏览器。
@@ -27,23 +27,26 @@ D:\kaoyanruanjian\
 ├─ backend\                 FastAPI 后端
 │   ├─ main.py              全部接口 + 五轮状态机 + 后台定时发布
 │   ├─ auth.py              密码哈希 / Session-Cookie / 身份依赖
-│   ├─ content.py           短文与阅读生成、词形标注、判分
-│   ├─ chat.py              AI 英语答疑（会话 / 语境快照 / 多轮提示词，旁路表）
+│   ├─ content.py           短文与阅读生成、词形标注、判分（按书籍注入难度）
+│   ├─ chat.py              AI 英语答疑（按书籍调教，旁路表）
+│   ├─ scenario.py          情景背词：微情景例句 + 视觉场景卡（旁路，不改进度）
 │   ├─ llm.py               可配置生成层：JSON 提取 / 重试 / 模型切换 / 连通性测试
 │   ├─ db.py                连接 / 事务 / 幂等建表与增量迁移
-│   ├─ schema.sql           12 张表（IF NOT EXISTS，含 chat_session/chat_message）
-│   ├─ seed.py              词库导入
+│   ├─ schema.sql           19 张表（含 book / word_example / word_scene）
+│   ├─ seed.py              词库导入（支持多考试标签）
 │   ├─ .env                 凭据（gitignore，已配好）
 │   └─ .venv\               Python 虚拟环境（gitignore）
 ├─ frontend\                Vue 3 + Vite
 │   ├─ src\api.js           fetch 封装（带 cookie）+ 发音
 │   ├─ src\App.vue          外壳、账号、导航、模型/答疑面板挂载
-│   ├─ src\components\      AuthPanel / LearnView / ReviewView / ArticlesView /
-│   │                       ReadingView / AdminView / ModelPanel / ChatPanel
+│   ├─ src\components\      AuthPanel / LearnView / ReviewView / ScenarioView /
+│   │                       ArticlesView / ReadingView / AdminView / ChatPanel
 │   ├─ src\style.css
 │   └─ dist\                构建产物，由 FastAPI 同源托管（gitignore）
 ├─ scripts\
 │   ├─ import_ecdict.py     从 ECDICT 导入 ky 考研词（已跑）
+│   ├─ import_books.py      按考试标签导入四/六/高考词（已跑）
+│   ├─ migrate_books.py     多书籍结构迁移 + 报告（幂等，已跑）
 │   ├─ create_admin.py      初始化管理员账号（密码你自己输）
 │   ├─ weekly_publish.py    周五晚定时发布，可挂 Windows 计划任务
 │   ├─ verify_full.py       完整版端到端自检（自动清理测试数据）
@@ -92,6 +95,19 @@ D:\kaoyanruanjian\
 - 首个注册账号自动接管本机旧进度（一次性、事务内完成）
 - `admin` 表 + 管理员登录；管理员只管词库（新增/修正词条、检索、来源统计）。本机模式可直接试用，多用户环境下严格限管理员
 
+### 多书籍（考研 / 四级 / 六级 / 高考）
+- 顶栏「当前书籍」下拉切换；四本书的**进度、词池、短文、阅读、AI 出题完全隔离**。同一个词（如 approach）同时在多本书的词库里，但每本书各自从零学起，互不串进度。
+- 数据结构：`book` 表存考试类型与 ECDICT 标签；`daily_plan / progress / article / answer_log / chat_session` 都带 `book_id`；唯一键重建为 `(user, book, word, round)` 等，`user.current_book_id` 记住当前书。
+- 老数据全部归到 book 1（考研英语），迁移脚本 `scripts/migrate_books.py` 幂等，已跑完且无损。
+- 四条生成链路都按当前书注入考试类型与词汇范围：短文、周阅读题目、AI 助教、练习卡；**不覆盖各考试专属题型**（那是二期），目前是难度+词汇适配。
+- 词库按 ECDICT 天然标签过滤，一个词可属于多本书，不复制词条。
+
+### 情景式背词（A/B/C）
+- **A 微情景例句**：每个词配 1 个 10～25 词真题风格短句，挖空让你填；答对/答错即时反馈，可展开中文翻译。
+- **B 短文沉浸**：已有短文页即是完整入口——纯文本通读 → 点按钮让全文可点查义 → 语境小测。
+- **C 图片联想**：为每个词生成中文场景描述并渲染成场景卡（SVG 图片，无外部依赖）；看图四选一猜词，抽象词也能降级为场景描述。
+- 三者都在导航「情景背词」页里切换，内容按 `(词, 书)` 懒生成并缓存，刷新不变；**完全旁路**，不写 `progress`，不计入五轮。
+
 ### 每日短文（阶段 5 · A1～A7）
 - **学完 5 轮（已学完）后出现**；按「用户 + 日期批次」持久化，重复进入是同一组，绝不重新生成
 - 全放优先：每篇 12 词、最多 3 篇；超过容量走**抽词**，优先错得多的词并轮转（`sample_cursor`），**未收录词明确列清单告知**
@@ -117,10 +133,21 @@ D:\kaoyanruanjian\
 
 ## 四、词库与生成层
 
-**词库已导入完成**：`word` 表 **4,803 词** = 102 个内置高频样本 + **4,701 个 ECDICT `ky` 考研词**（从官方 77 万词条筛选）。导入只做 `INSERT IGNORE`，原有 102 词的 id 不变，因此已有 `progress` 引用完全不受影响。ECDICT 词标记 `source='ECDICT-ky'`、`verified=0`，按当年大纲抽查核对后再标 1（需求 B1 的正确性兜底）。重新导入：
+**词库已按四本书导入完成**：`word` 表共 **7,395 词**。各书按 ECDICT 标签过滤，一个词可同时属于多本书：
+
+| 书籍 | 标签 | 词数 |
+| --- | --- | --- |
+| 考研英语 | `ky` | 4,803 |
+| 四级词汇 | `cet4` | 3,755 |
+| 六级词汇 | `cet6` | 5,311 |
+| 高考词汇 | `gk` | 3,616 |
+
+导入只做 `INSERT IGNORE`，原有词的 id 不变，已有 `progress` 引用完全不受影响。ECDICT 词标记 `source='ECDICT-ky'` 或 `'ECDICT-exam'`、`verified=0`，按当年大纲抽查核对后再标 1（需求 B1 的正确性兜底）。重新导入 / 预览：
 
 ```
-backend\.venv\Scripts\python.exe scripts\import_ecdict.py
+backend\.venv\Scripts\python.exe scripts/import_ecdict.py
+backend\.venv\Scripts\python.exe scripts/import_books.py --dry-run
+backend\.venv\Scripts\python.exe scripts/import_books.py
 ```
 
 **大模型是可选增强**：`llm.py` 把 `generate_text(prompt)` / `generate_json(prompt)` 做成配置化的一层，主源 + 兜底都从 `.env` 读，不写死模型名；短文、周阅读题目、主观题判分共用这一层。
@@ -201,7 +228,7 @@ backend\.venv\Scripts\python.exe scripts\verify_full.py
 | 页面显示「后端未连通」 | 后端没启动 | 先启动后端再刷新 |
 | 每日短文里没有批次 | 还没学完 5 轮 | 去学习板块把 R1～R5 走完 |
 | 周阅读显示「尚未发布」 | 没到周五 18:00 | 点「提前生成本周（试用）」，或等定时任务 |
-| 提示「未掌握池只剩 0 个词」 | 4803 词都学完了 | 重跑 `import_ecdict.py` 或由管理员加词 |
+| 提示「未掌握池只剩 0 个词」 | 当前这本书的词都学完了 | 切到别的书，或重跑 `import_books.py` 由管理员加词 |
 | 中文变问号 | 连接没走 utf8mb4 | 检查库/表字符集；`db.py` 已显式指定 |
 | 一天想重选 N | 一天只能建一条计划 | 接口返回 409；明天再来 |
 
