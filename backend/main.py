@@ -21,7 +21,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -1329,6 +1329,166 @@ def admin_upsert_word(req: WordIn, user=Depends(require_admin)):
         return {"ok": True, "word": word}
 
 
+# ------------------------------------------------------------------ 管理端（独立页面）
+
+@app.get("/api/admin/overview")
+def admin_overview(days: int = 14, user=Depends(require_admin)):
+    """管理端首页需要的全部数字，一次请求取齐，避免前端并发打五个接口。
+
+    刻意只聚合「指导动作」的指标：今天有没有人来、来了做了多少、复习有没有积压、
+    语境填空错在哪些词。不做没有对应动作的虚荣指标。
+    """
+    days = max(7, min(30, int(days)))
+    today = date.today()
+    with transaction() as conn:
+        head = one(
+            conn,
+            """SELECT COUNT(*) AS items, COUNT(DISTINCT user_id) AS users
+               FROM `answer_log` WHERE DATE(created_at)=CURDATE()""",
+        )
+        due = one(
+            conn,
+            """SELECT COUNT(*) AS c FROM `progress`
+               WHERE status='done' AND stage<>'mastered' AND next_due_at<=CURDATE()""",
+        )
+        cloze = one(
+            conn,
+            """SELECT COUNT(*) AS total, COALESCE(SUM(correct=1),0) AS ok
+               FROM `answer_log`
+               WHERE kind='cloze' AND created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)""",
+        )
+        learners = one(
+            conn, "SELECT COUNT(*) AS c FROM `user` WHERE password_hash<>''"
+        )
+        last = one(
+            conn,
+            """SELECT MAX(created_at) AS t, COUNT(DISTINCT user_id) AS c
+               FROM `answer_log` WHERE created_at>=DATE_SUB(CURDATE(), INTERVAL 6 DAY)""",
+        )
+        rows = query(
+            conn,
+            """SELECT DATE(created_at) AS d, COUNT(*) AS items,
+                      COUNT(DISTINCT user_id) AS users
+               FROM `answer_log`
+               WHERE created_at>=DATE_SUB(CURDATE(), INTERVAL %s DAY)
+               GROUP BY DATE(created_at) ORDER BY d""",
+            (days - 1,),
+        )
+        hot = query(
+            conn,
+            """SELECT w.word, w.translation, COUNT(*) AS errors
+               FROM `answer_log` a JOIN `word` w ON w.id=a.word_id
+               WHERE a.kind='cloze' AND a.correct=0
+                 AND a.created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)
+               GROUP BY w.id, w.word, w.translation
+               ORDER BY errors DESC, w.word ASC LIMIT 8""",
+        )
+        sources = query(
+            conn,
+            """SELECT COALESCE(source,'unknown') AS source, COUNT(*) AS c
+               FROM `word` GROUP BY source ORDER BY c DESC LIMIT 6""",
+        )
+        books = query(
+            conn,
+            """SELECT b.id, b.name, COUNT(DISTINCT p.user_id) AS users
+               FROM `book` b LEFT JOIN `progress` p ON p.book_id=b.id
+               GROUP BY b.id, b.name ORDER BY b.sort_no""",
+        )
+
+    # 补齐没有答题的日期，否则前端柱状图会把「没人学」的空白挤掉。
+    series = {}
+    for r in rows:
+        key = r["d"] if isinstance(r["d"], str) else str(r["d"])
+        series[key[:10]] = {"date": key[:10], "items": int(r["items"]),
+                            "users": int(r["users"])}
+    daily = []
+    for i in range(days - 1, -1, -1):
+        d = today.fromordinal(today.toordinal() - i)
+        key = d.isoformat()
+        daily.append(series.get(key, {"date": key, "items": 0, "users": 0}))
+    for r in daily:
+        r["weekend"] = date.fromisoformat(r["date"]).weekday() >= 5
+
+    total = int(cloze["total"] or 0)
+    ok = int(cloze["ok"] or 0)
+    return {
+        "kpi": {
+            "today_users": int(head["users"] or 0),
+            "today_items": int(head["items"] or 0),
+            "due_backlog": int(due["c"] or 0),
+            "cloze_rate": round(ok * 100.0 / total, 1) if total else None,
+            "cloze_total": total,
+            "learners": int(learners["c"] or 0),
+            "week_active": int(last["c"] or 0),
+            "last_answer_at": str(last["t"]) if last["t"] else None,
+        },
+        "daily": daily,
+        "hot": hot,
+        "sources": sources,
+        "books": books,
+    }
+
+
+@app.get("/api/admin/learners")
+def admin_learners(user=Depends(require_admin)):
+    """跨账号学员表：当天做了多少、积压多少、语境错多少、最后活跃时间。
+
+    「状态」由最近活跃时间推导，前端按 <1 天 / 2-3 天 / ≥4 天 分稳定、波动、掉队。
+    """
+    with transaction() as conn:
+        rows = query(
+            conn,
+            """SELECT u.id, u.username, u.created_at, COALESCE(b.name,'—') AS book,
+                      (SELECT COUNT(DISTINCT p.word_id) FROM `progress` p
+                        WHERE p.user_id=u.id AND p.stage='mastered') AS mastered,
+                      (SELECT COUNT(*) FROM `progress` p
+                        WHERE p.user_id=u.id AND p.status='done'
+                          AND p.stage<>'mastered' AND p.next_due_at<=CURDATE()) AS due,
+                      (SELECT COUNT(*) FROM `answer_log` a
+                        WHERE a.user_id=u.id AND a.kind='cloze' AND a.correct=0) AS cloze_errors,
+                      (SELECT COUNT(*) FROM `answer_log` a
+                        WHERE a.user_id=u.id AND DATE(a.created_at)=CURDATE()) AS today_items,
+                      (SELECT COUNT(*) FROM `progress` p
+                        WHERE p.user_id=u.id AND p.status='done'
+                          AND DATE(p.updated_at)=CURDATE()) AS today_done,
+                      (SELECT MAX(a.created_at) FROM `answer_log` a
+                        WHERE a.user_id=u.id) AS last_at
+               FROM `user` u
+               LEFT JOIN `book` b ON b.id=u.current_book_id
+               WHERE u.password_hash<>''
+               ORDER BY last_at DESC""",
+        )
+    today = date.today()
+    out = []
+    for r in rows:
+        last = r["last_at"]
+        days_idle = None if last is None else (today - last.date()).days
+        r["last_at"] = str(last) if last else None
+        r["days_idle"] = days_idle
+        if days_idle is None:
+            state = "never"
+        elif days_idle <= 1:
+            state = "stable"
+        elif days_idle <= 3:
+            state = "wobble"
+        else:
+            state = "lost"
+        r["state"] = state
+        r["created_at"] = str(r["created_at"])
+        for k in ("mastered", "due", "cloze_errors", "today_items", "today_done"):
+            r[k] = int(r[k] or 0)
+        out.append(r)
+    order = {"stable": 0, "wobble": 1, "lost": 2, "never": 3}
+    out.sort(key=lambda x: (order[x["state"]], -(x["days_idle"] or 999)))
+    summary = {
+        "total": len(out),
+        "stable": sum(1 for r in out if r["state"] == "stable"),
+        "wobble": sum(1 for r in out if r["state"] == "wobble"),
+        "lost": sum(1 for r in out if r["state"] in ("lost", "never")),
+    }
+    return {"learners": out, "summary": summary}
+
+
 # ---------------------------------------------------------------- AI tutor chat (side channel)
 
 class ChatStartIn(BaseModel):
@@ -1477,6 +1637,16 @@ def chat_delete(req: ChatSessionIn, user=Depends(current_user)):
 
 
 # ---------------------------------------------------------------- static frontend
+
+# 管理端是同一份构建产物、另一套外壳：/admin 直接回 index.html，前端按路径前缀
+# 决定挂学员端还是管理端。这样不用维护第二个构建，也不会让管理入口出现在底栏。
+@app.get("/admin")
+def admin_page():
+    index = DIST / "index.html"
+    if index.is_file():
+        return FileResponse(str(index))
+    return HTMLResponse("<meta charset='utf-8'><h3>前端还没构建</h3>", status_code=200)
+
 
 if DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(DIST), html=True), name="frontend")

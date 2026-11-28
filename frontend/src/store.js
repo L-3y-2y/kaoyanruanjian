@@ -14,7 +14,10 @@ export const store = reactive({
   currentBook: null,        // 当前正在学的书
   modelInfo: { configured: false, current: '', models: [] },
   theme: 'light',
-  activeTab: 'learn',       // 当前主视图：learn/review/articles/reading/wordbank/admin
+  activeTab: 'learn',       // 当前主视图：learn/review/articles/reading/wordbank
+  adminMode: typeof window !== 'undefined' && window.location.pathname.startsWith('/admin'),
+  adminTab: 'overview',     // 管理端当前面板：overview/learners/words/model
+  learnersTotal: 0,         // 管理端学员总数（顶栏面包屑用）
   chatOpen: false,
   chatContext: null,        // null=通用答疑；{source_type, source_id, title}=带上下文
   showAuth: false,

@@ -11,7 +11,7 @@ import ReviewView from './components/ReviewView.vue'
 import ArticlesView from './components/ArticlesView.vue'
 import ReadingView from './components/ReadingView.vue'
 import WordBank from './components/WordBank.vue'
-import AdminConsole from './components/AdminConsole.vue'
+import AdminShell from './components/AdminShell.vue'
 import ModelPanel from './components/ModelPanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 
@@ -27,14 +27,16 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="app">
+  <div :class="store.adminMode ? 'adm-root' : 'app'">
     <AuthPanel v-if="store.showAuth || !store.me" @done="onAuthDone" @cancel="store.showAuth = false" />
 
     <ModelPanel v-if="store.showModel" :info="store.modelInfo" @close="closeModel" @changed="onModelChanged" />
     <ChatPanel v-if="store.chatOpen" :context="store.chatContext" @close="closeChat" />
     <MoreSheet v-if="store.moreOpen" />
 
-    <template v-if="store.me && !store.showAuth">
+    <AdminShell v-if="store.adminMode && store.me && !store.showAuth" />
+
+    <template v-else-if="store.me && !store.showAuth">
       <TopBar />
 
       <div class="notice" v-if="store.me.local">
@@ -47,7 +49,6 @@ onMounted(async () => {
       <ArticlesView v-else-if="store.activeTab === 'articles'" :key="'articles-' + store.currentBook?.id" />
       <ReadingView v-else-if="store.activeTab === 'reading'" :key="'reading-' + store.currentBook?.id" />
       <WordBank v-else-if="store.activeTab === 'wordbank'" />
-      <AdminConsole v-else-if="store.activeTab === 'admin'" :me="store.me" :health="store.health" />
 
       <footer>
         进度、短文快照与答卷只存在服务端 MySQL 的 {{ store.health?.database || 'kaoyanruanjian' }} 库里；

@@ -24,6 +24,11 @@ function account() {
   closeMore()
   openSwitchAccount()
 }
+function admin() {
+  // 管理端是独立页面（/admin）：宽屏侧边栏，不进底栏，也不占学员端一个 tab。
+  closeMore()
+  window.location.href = '/admin'
+}
 function theme() {
   toggleTheme()
   closeMore()
@@ -64,9 +69,9 @@ async function onBook(e) {
         <span class="ar">›</span>
       </button>
 
-      <button class="sheet-row" v-if="store.me?.is_admin" @click="pick('admin')">
+      <button class="sheet-row" v-if="store.me?.is_admin || store.me?.local" @click="admin">
         <span class="ic">管</span>
-        <span class="tx"><b>管理后台</b><span>用户、词库、数据与模型</span></span>
+        <span class="tx"><b>管理控制台</b><span>学员看板、词库、模型 —— 独立页面</span></span>
         <span class="ar">›</span>
       </button>
 

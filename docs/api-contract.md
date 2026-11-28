@@ -263,6 +263,9 @@
 | `GET /api/admin/stats` | 管理员或本机模式 | 账号数 / 批次数 / 文章数 / 词库来源分布 |
 | `GET /api/admin/words?q=&limit=` | 同上 | 按拼写或中文释义检索 |
 | `POST /api/admin/word` | 同上 | `{word,phonetic,translation,pos,tag}`；`ON DUPLICATE KEY UPDATE` 修正词条并标 `verified=1` |
+| `GET /api/admin/overview?days=14` | 同上 | 管理端首页：今日活跃/答题/复习积压/语境正确率、逐日答题序列（补齐空白天）、语境错词 Top8、词源分布、各书在用人数 |
+| `GET /api/admin/learners` | 同上 | 跨账号学员表：当前书籍、今日答题、已掌握、复习积压、语境错题、最后活跃时间、`state`（stable/wobble/lost/never）+ 分组汇总 |
+| `GET /admin` | — | 返回同一份 SPA 产物；前端按路径前缀挂载管理端外壳（宽屏侧边栏），不占用学员端底部 tab |
 
 ## 错误对照（v2 补充）
 
