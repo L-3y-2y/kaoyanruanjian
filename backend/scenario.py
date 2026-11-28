@@ -1,8 +1,9 @@
-"""Micro-sentence cloze practice for the learning module.
+"""Context-cloze source for the mandatory gate at the end of learning.
 
-The sentence is generated once per (word, book), cached in `word_example`,
-and used only in the "五轮学完" completion card. It is a STRICT side channel:
-it never writes progress / answer_log / the five-round state.
+A sentence is generated once per (word, book) and cached in `word_example`.
+The five rounds must be finished first; then today's words appear as fill-in
+sentences, and ALL of them must pass before the batch is marked memorized and
+enters the review queue. Sentence generation itself never writes progress.
 """
 
 from db import detach_for_llm, execute, one, query
@@ -103,6 +104,23 @@ def _local_example(row):
     templates = LOCAL_SENTENCES.get(pos, LOCAL_GENERIC)
     sentence = templates[sum(ord(c) for c in row["word"]) % len(templates)].format(w=row["word"])
     return sentence, (row["translation"] or "").split(";")[0].strip()[:300], "local"
+
+
+def plan_cloze_words(conn, user_id, book_id, plan_id, limit=5):
+    """Pick spread-out words of a finished plan for the mandatory cloze gate."""
+    rows = query(
+        conn,
+        """SELECT DISTINCT w.id, w.word, w.translation, w.pos
+           FROM `progress` p JOIN `word` w ON w.id=p.word_id
+           WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
+             AND p.stage<>'mastered'
+           ORDER BY w.id""",
+        (user_id, book_id, plan_id),
+    )
+    if len(rows) <= limit:
+        return rows
+    step = len(rows) / limit
+    return [rows[min(len(rows) - 1, int(i * step))] for i in range(limit)]
 
 
 def ensure_example(conn, word_id, book_id, book=None):

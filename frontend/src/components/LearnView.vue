@@ -19,43 +19,64 @@ const correctFlash = ref(false)
 let flashTimer = null
 const confirmKnown = ref(false)
 
-// 例句填空：五轮学完后，在完成卡片上针对今日最后一个词做一次语境巩固。
-const exampleData = ref(null)
-const exampleAnswer = ref('')
-const exampleFeedback = ref(null)
-const showExampleTranslation = ref(false)
+// 语境填空关卡：五轮全部通过后出现，必须全部填对才算完成今日学习。
+const cloze = ref({ items: [], done: 0, total: 0, complete: false })
+const clozeAnswers = ref({})
+const clozeFeedback = ref({})
+const clozeLoading = ref(false)
 
 function norm(s) {
   return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
-function masked(sentence, word) {
-  const esc = String(word || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return String(sentence || '').replace(new RegExp(`\\b${esc}\\w*\\b`, 'i'), '______')
-}
-
-async function loadExample() {
+async function loadCloze() {
+  clozeLoading.value = true
   try {
-    const r = await api('/api/learn/example')
-    exampleData.value = r.word ? r : null
-  } catch {
-    exampleData.value = null
+    cloze.value = await api('/api/learn/cloze')
+    clozeAnswers.value = {}
+    clozeFeedback.value = {}
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    clozeLoading.value = false
   }
 }
 
-function checkExample() {
-  if (!exampleData.value || exampleFeedback.value !== null) return
-  exampleFeedback.value = norm(exampleAnswer.value) === norm(exampleData.value.word)
+async function checkCloze(item) {
+  if (busy.value || item.status === 'passed') return
+  const value = clozeAnswers.value[item.id] || ''
+  if (!norm(value)) return
+  busy.value = true
+  try {
+    const r = await api('/api/learn/cloze/check', {
+      method: 'POST',
+      body: JSON.stringify({ item_id: item.id, value })
+    })
+    cloze.value = { items: cloze.value.items.map(
+      it => it.id === item.id ? { ...it, status: r.correct ? 'passed' : it.status,
+                                 attempts: it.attempts + 1 }
+                               : it),
+      done: r.done ?? cloze.value.done, total: r.total ?? cloze.value.total,
+      complete: !!r.complete }
+    clozeFeedback.value = { ...clozeFeedback.value,
+      [item.id]: r.correct ? 'ok' : 'bad' }
+    if (r.complete && r.state) {
+      clozeAnswers.value = {}
+      await applyState(r.state)
+    }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
 }
 
 watch(() => state.value?.kind, (kind) => {
-  if (kind === 'learning_done') {
-    exampleAnswer.value = ''
-    exampleFeedback.value = null
-    showExampleTranslation.value = false
-    loadExample()
-  } else {
-    exampleData.value = null
+  if (kind === 'cloze_quiz') {
+    clozeFeedback.value = {}
+    loadCloze()
+  } else if (kind !== 'learning_done') {
+    cloze.value = { items: [], done: 0, total: 0, complete: false }
   }
 })
 
@@ -216,29 +237,41 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
       <p class="hint" v-if="!pool?.available">词库里没有可学的新词了，请联系管理员导入更多考研词。</p>
     </section>
 
+    <section v-else-if="state?.kind === 'cloze_quiz'" class="card quiz">
+      <div class="quiz-head">
+        <span class="round">语境填空 · 今日关卡</span>
+        <span class="muted">五轮已通过，全部填对方可完成今日学习</span>
+      </div>
+      <div class="bar"><div :style="{ width: cloze.total ? (cloze.done / cloze.total * 100) + '%' : '0%' }"></div></div>
+      <p class="muted small">已完成 {{ cloze.done }} / {{ cloze.total }} 句</p>
+      <p class="hint" v-if="clozeLoading">正在准备今天的例句…</p>
+      <p class="hint" v-if="!clozeLoading && !cloze.total">今天的例句还在生成中，请稍后刷新。</p>
+
+      <div class="cloze-item" v-for="(item, idx) in cloze.items" :key="item.id">
+        <p class="muted small">第 {{ idx + 1 }} 句 · {{ item.pos || '单词' }}</p>
+        <p class="cloze-sentence">{{ item.sentence }}</p>
+        <p class="muted small" v-if="item.translation">提示：{{ item.translation }}</p>
+        <template v-if="item.status === 'passed'">
+          <p class="ok-note">✓ 已通过</p>
+        </template>
+        <template v-else>
+          <div class="answer-row">
+            <input v-model="clozeAnswers[item.id]" :disabled="busy"
+                   placeholder="填入句中挖空的单词" @keyup.enter="checkCloze(item)" />
+            <button class="primary" :disabled="busy" @click="checkCloze(item)">提交</button>
+          </div>
+          <p class="bad-note" v-if="clozeFeedback[item.id] === 'bad'">✗ 还没填对，再想想（答案区分大小写不敏感）</p>
+        </template>
+      </div>
+    </section>
+
     <section v-else-if="state?.kind === 'learning_done'" class="card done">
       <h2>今天的 {{ state.word_count }} 个词已学完<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
-      <p>5 轮全部走完，已进入复习池，之后会按遗忘曲线（1/2/4/7/15/30 天）自动安排复习。</p>
+      <p>五轮学习 + 语境填空关卡全部通过，已进入复习池，之后会按遗忘曲线（1/2/4/7/15/30 天）自动安排复习。</p>
       <p class="muted">现在就可以看今天的短文了。</p>
       <div class="actions">
         <button class="primary" @click="goTab('articles')">去看每日短文</button>
         <button class="ghost" @click="goTab('review')">去复习板块</button>
-      </div>
-
-      <div class="example-box" v-if="exampleData">
-        <p class="muted small">例句填空 · 在语境里再用一次「{{ exampleData.word }}」</p>
-        <p class="example-sentence">{{ masked(exampleData.example?.sentence, exampleData.word) }}</p>
-        <div class="answer-row">
-          <input v-model="exampleAnswer" :disabled="exampleFeedback !== null"
-                 placeholder="填入挖空的单词" @keyup.enter="checkExample" />
-          <button class="primary" :disabled="exampleFeedback !== null" @click="checkExample">检查</button>
-        </div>
-        <p v-if="exampleFeedback === true" class="ok-note">✓ 填对了，就是「{{ exampleData.word }}」</p>
-        <p v-if="exampleFeedback === false" class="bad-note">✗ 再想想，正确答案是「{{ exampleData.word }}」</p>
-        <button class="ghost tiny" @click="showExampleTranslation = !showExampleTranslation">
-          {{ showExampleTranslation ? '收起翻译' : '看例句翻译' }}
-        </button>
-        <p v-if="showExampleTranslation" class="muted">{{ exampleData.example?.translation }}</p>
       </div>
     </section>
 
@@ -372,12 +405,16 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
   font-size: 12.5px;
   color: var(--muted);
 }
-.example-box {
-  margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--line-strong);
+.cloze-item {
+  margin-top: 18px; padding: 16px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--card);
 }
-.example-sentence {
+.cloze-sentence {
   font-size: 17px; line-height: 1.7; font-weight: 600;
-  margin: 12px 0; padding: 14px; border: 1px solid var(--line);
-  border-radius: 12px; background: var(--card); color: var(--ink);
+  margin: 10px 0; color: var(--ink);
 }
+.ok-note { color: var(--ok); font-weight: 700; margin: 10px 0 2px; }
+.bad-note { color: var(--warn); font-weight: 700; margin: 10px 0 2px; }
+.answer-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.answer-row input { flex: 1; min-width: 180px; }
 </style>

@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS `daily_plan` (
   `study_date`     DATE NOT NULL,
   `word_count`     INT  NOT NULL,
   `cycle_count`    INT  NOT NULL,
-  `stage`          ENUM('learning','memorized','mastered') NOT NULL DEFAULT 'learning',
+  `stage`          ENUM('learning','cloze','memorized','mastered') NOT NULL DEFAULT 'learning',
   `review_status`  ENUM('not_started','in_progress','done') NOT NULL DEFAULT 'not_started',
   `memorized_at`   TIMESTAMP NULL,
   `mastered_at`    TIMESTAMP NULL,
@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   INDEX `idx_session` (`session_id`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Micro-sentence cloze used on the learn completion card.
+-- Micro-sentence source for the mandatory context cloze at the end of learning.
 -- Generated lazily per word + book and cached; NEVER writes progress.
 CREATE TABLE IF NOT EXISTS `word_example` (
   `id`         INT AUTO_INCREMENT PRIMARY KEY,
@@ -221,6 +221,26 @@ CREATE TABLE IF NOT EXISTS `word_example` (
   `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_example_word_book_seq` (`word_id`,`book_id`,`seq`),
   INDEX `idx_example_word` (`word_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mandatory context cloze: today's learned words must ALL pass before the
+-- batch is marked memorized and enters the Ebbinghaus review queue.
+-- Rows are created once per plan when the five rounds finish; the answer word
+-- is stored server-side so the browser never receives it before answering.
+CREATE TABLE IF NOT EXISTS `learn_cloze` (
+  `id`           INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id`      INT NOT NULL,
+  `book_id`      INT NOT NULL DEFAULT 1,
+  `daily_plan_id` INT NOT NULL,
+  `word_id`      INT NOT NULL,
+  `sentence`     VARCHAR(512) NOT NULL,
+  `translation`  VARCHAR(512) NULL,
+  `answer`       VARCHAR(128) NOT NULL,
+  `status`       ENUM('pending','passed') NOT NULL DEFAULT 'pending',
+  `attempts`     INT NOT NULL DEFAULT 0,
+  `created_at`   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_cloze_plan_word` (`daily_plan_id`,`word_id`),
+  INDEX `idx_cloze_user` (`user_id`,`book_id`,`daily_plan_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Study-time dashboard: one row per (user, day), seconds accumulated via the

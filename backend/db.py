@@ -151,6 +151,22 @@ def ensure_columns(cur):
         if not meta or meta["c"] == 0:
             cur.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}")
 
+    # Learning now has a mandatory context-cloze gate between the five rounds
+    # and the review queue. Widen the ENUM in place so old rows keep their value.
+    cur.execute(
+        """SELECT column_type FROM information_schema.columns
+           WHERE table_schema=%s AND table_name='daily_plan' AND column_name='stage'""",
+        (DB_NAME,),
+    )
+    stage_col = cur.fetchone()
+    stage_type = str((stage_col or {}).get("column_type")
+                     or (stage_col or {}).get("COLUMN_TYPE") or "")
+    if stage_type and "cloze" not in stage_type:
+        cur.execute(
+            """ALTER TABLE `daily_plan` MODIFY COLUMN `stage`
+               ENUM('learning','cloze','memorized','mastered') NOT NULL DEFAULT 'learning'"""
+        )
+
     # Stage 1~3 made these NOT NULL because every answer belonged to a word.
     # Reading-comprehension answers have no word/plan/progress, so relax them.
     relax = [

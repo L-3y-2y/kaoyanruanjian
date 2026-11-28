@@ -346,6 +346,12 @@ def fetch_state(conn, uid, mode, book_id, plan_id=None):
         counts = plan_totals(conn, uid, plan["id"], 1, 5)
         row = one(conn, NEXT_ITEM_SQL, (uid, book["id"], plan["id"], 1, 5))
         if not row:
+            # Five rounds are over. The mandatory context-cloze gate must be
+            # cleared before the batch becomes "memorized"; until then the
+            # plan stays in stage='cloze' and keeps the word out of review.
+            if plan["stage"] == "cloze":
+                return {"kind": "cloze_quiz", "plan_id": plan["id"],
+                        "word_count": plan["word_count"]}
             return {"kind": "learning_done", "plan_id": plan["id"],
                     "word_count": plan["word_count"],
                     "stage": plan["stage"] or "memorized"}
@@ -373,14 +379,52 @@ def fetch_state(conn, uid, mode, book_id, plan_id=None):
     return review_item_payload(row)
 
 
+def _finalize_learn(conn, uid, plan, book_id):
+    """After EVERY context-cloze item passes: enter the Ebbinghaus review pool."""
+    if not plan or plan["stage"] not in ("learning", "cloze"):
+        return
+    execute(conn,
+            """UPDATE `daily_plan`
+               SET stage='memorized', memorized_at=COALESCE(memorized_at, NOW())
+               WHERE id=%s AND stage IN ('learning','cloze')""", (plan["id"],))
+    execute(conn,
+            "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s AND stage='none'",
+            (uid, plan["id"]))
+    execute(conn,
+            """UPDATE `progress`
+               SET review_stage=0, review_round=0,
+                   next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY)
+               WHERE user_id=%s AND daily_plan_id=%s AND round=5 AND stage='memorized'""",
+            (REVIEW_INTERVALS[0], uid, plan["id"]))
+
+
+def ensure_cloze(conn, uid, plan, book):
+    """Build the mandatory context-cloze rows once a plan's five rounds finish."""
+    existing = one(conn, "SELECT COUNT(*) AS c FROM `learn_cloze` WHERE daily_plan_id=%s",
+                   (plan["id"],))["c"]
+    if existing:
+        return
+    words = scenario_service.plan_cloze_words(conn, uid, book["id"], plan["id"], limit=5)
+    for w in words:
+        ex = scenario_service.ensure_example(conn, w["id"], book["id"], book)
+        if not ex or not ex.get("sentence"):
+            continue
+        execute(
+            conn,
+            """INSERT IGNORE INTO `learn_cloze`
+               (user_id, book_id, daily_plan_id, word_id, sentence, translation, answer)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (uid, book["id"], plan["id"], w["id"], ex["sentence"],
+             ex.get("translation"), w["word"]),
+        )
+
+
 def advance_state(conn, uid, mode, book_id, plan_id=None):
     """Advance plan/stage transitions after a WRITE. Call only from write routes.
 
-    Learn mode: when all 5 rounds of today's plan are done, mark the batch
-    "memorized" and seed the Ebbinghaus review queue (each word's round=5 row
-    gets review_stage=0, review_round=0, next_due_at = today + first interval).
-    Review mode needs no advance here — its progress is written inline in the
-    answer route.
+    Learn mode: once all 5 rounds are done, generate the context-cloze gate and
+    hold the plan in stage='cloze'. Finalization (memorized + review queue) only
+    happens in the cloze check route after every sentence has been passed.
     """
     if mode == "learn":
         if plan_id:
@@ -394,19 +438,15 @@ def advance_state(conn, uid, mode, book_id, plan_id=None):
             return
         if plan_totals(conn, uid, plan["id"], 1, 5)["done"] < plan["word_count"] * 5:
             return
-        execute(conn,
-                """UPDATE `daily_plan`
-                   SET stage='memorized', memorized_at=COALESCE(memorized_at, NOW())
-                   WHERE id=%s AND stage='learning'""", (plan["id"],))
-        execute(conn,
-                "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s AND stage='none'",
-                (uid, plan["id"]))
-        execute(conn,
-                """UPDATE `progress`
-                   SET review_stage=0, review_round=0,
-                       next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY)
-                   WHERE user_id=%s AND daily_plan_id=%s AND round=5""",
-                (REVIEW_INTERVALS[0], uid, plan["id"]))
+        book = book_row(conn, book_id)
+        ensure_cloze(conn, uid, plan, book)
+        total = one(conn, "SELECT COUNT(*) AS c FROM `learn_cloze` WHERE daily_plan_id=%s",
+                    (plan["id"],))["c"]
+        if total:
+            execute(conn, "UPDATE `daily_plan` SET stage='cloze' WHERE id=%s", (plan["id"],))
+        else:
+            # No usable sentences (rare): finalize directly rather than trap.
+            _finalize_learn(conn, uid, plan, book_id)
         return
 
     # review mode: nothing to advance here (handled in the answer route).
@@ -431,6 +471,11 @@ class KnownIn(BaseModel):
 
 class HeartbeatIn(BaseModel):
     seconds: int = Field(ge=1, le=3600)
+
+
+class ClozeCheckIn(BaseModel):
+    item_id: int
+    value: str = ""
 
 
 class RevealIn(BaseModel):
@@ -912,28 +957,87 @@ def scenario_example(word_id: int, user=Depends(current_user)):
         return row
 
 
-@app.get("/api/learn/example")
-def learn_example(user=Depends(current_user)):
-    """Micro-sentence cloze for the last word of today's completed learn plan."""
+def _cloze_mask(sentence, answer):
+    """Blank the target word INCLUDING inflections — no answer leaks to the browser."""
+    if not answer:
+        return sentence or ""
+    pattern = re.compile(r"\b" + re.escape(answer) + r"\w*\b", re.IGNORECASE)
+    return pattern.sub(lambda m: "_" * len(m.group(0)), sentence or "")
+
+
+@app.get("/api/learn/cloze")
+def learn_cloze(user=Depends(current_user)):
+    """Today's mandatory context-cloze items. Answers stay server-side."""
     with transaction() as conn:
         book = book_row(conn, user["book_id"])
         plan = _learn_plan(conn, user["id"], book["id"])
-        if not plan:
-            return {"word": None, "word_id": None, "example": None}
-        row = one(
+        if not plan or plan["stage"] != "cloze":
+            return {"items": [], "done": 0, "total": 0, "complete": False}
+        rows = query(
             conn,
-            """SELECT w.id, w.word, w.translation, w.pos
-               FROM `progress` p JOIN `word` w ON w.id=p.word_id
-               WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
-               ORDER BY p.id DESC LIMIT 1""",
+            """SELECT c.id, c.sentence, c.translation, c.status, c.attempts,
+                      w.id AS word_id, w.pos, w.word AS answer
+               FROM `learn_cloze` c JOIN `word` w ON w.id=c.word_id
+               WHERE c.user_id=%s AND c.book_id=%s AND c.daily_plan_id=%s
+               ORDER BY c.id""",
             (user["id"], book["id"], plan["id"]),
         )
+        items = [{
+            "id": r["id"], "sentence": _cloze_mask(r["sentence"], r["answer"]),
+            "translation": r["translation"], "pos": r["pos"],
+            "status": r["status"], "attempts": int(r["attempts"] or 0),
+        } for r in rows]
+        passed = sum(1 for r in rows if r["status"] == "passed")
+        return {"items": items, "done": passed, "total": len(rows),
+                "complete": bool(rows) and passed == len(rows)}
+
+
+@app.post("/api/learn/cloze/check")
+def learn_cloze_check(req: ClozeCheckIn, user=Depends(current_user)):
+    """Grade one cloze item; finishing ALL of them finalizes the learn batch."""
+    with transaction() as conn:
+        book = book_row(conn, user["book_id"])
+        plan = _learn_plan(conn, user["id"], book["id"])
+        if not plan or plan["stage"] != "cloze":
+            raise HTTPException(status_code=409, detail="当前没有待完成的语境填空")
+        row = one(
+            conn,
+            """SELECT c.*, w.word AS answer FROM `learn_cloze` c
+               JOIN `word` w ON w.id=c.word_id
+               WHERE c.id=%s AND c.user_id=%s AND c.book_id=%s AND c.daily_plan_id=%s""",
+            (req.item_id, user["id"], book["id"], plan["id"]),
+        )
         if not row:
-            return {"word": None, "word_id": None, "example": None}
-        ex = scenario_service.ensure_example(conn, row["id"], book["id"], book)
-        return {"word": row["word"], "word_id": row["id"],
-                "translation": row["translation"], "pos": row["pos"],
-                "example": ex}
+            raise HTTPException(status_code=404, detail="找不到这道语境填空题")
+        if row["status"] == "passed":
+            return {"correct": True, "answer": row["answer"], "state": None}
+        correct = norm(req.value) == norm(row["answer"])
+        execute(conn,
+                """UPDATE `learn_cloze`
+                   SET attempts=attempts+1, status=IF(%s,'passed','pending')
+                   WHERE id=%s""", (int(correct), row["id"]))
+        execute(conn,
+                """INSERT INTO `answer_log`
+                   (user_id, book_id, word_id, daily_plan_id, progress_id,
+                    round, kind, action, user_answer, correct)
+                   VALUES (%s,%s,%s,%s,%s,5,'cloze','cloze',%s,%s)""",
+                (user["id"], book["id"], row["word_id"], plan["id"],
+                 None, req.value, int(correct)))
+        totals = one(
+            conn,
+            """SELECT COUNT(*) AS total, SUM(status='passed') AS passed
+               FROM `learn_cloze` WHERE daily_plan_id=%s""",
+            (plan["id"],),
+        )
+        passed = int(totals["passed"] or 0)
+        total = int(totals["total"] or 0)
+        result = {"correct": correct, "answer": row["answer"] if correct else None,
+                  "done": passed, "total": total, "complete": False, "state": None}
+        if total and passed == total:
+            _finalize_learn(conn, user["id"], plan, book["id"])
+            result["complete"] = True
+            result["state"] = fetch_state(conn, user["id"], "learn", book["id"])
+        return result
 
 
 # ---------------------------------------------------------------- daily articles
