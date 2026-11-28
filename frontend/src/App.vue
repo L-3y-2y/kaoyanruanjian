@@ -7,7 +7,6 @@ import TopBar from './components/TopBar.vue'
 import NavTabs from './components/NavTabs.vue'
 import LearnView from './components/LearnView.vue'
 import ReviewView from './components/ReviewView.vue'
-import ScenarioView from './components/ScenarioView.vue'
 import ArticlesView from './components/ArticlesView.vue'
 import ReadingView from './components/ReadingView.vue'
 import WordBank from './components/WordBank.vue'
@@ -45,7 +44,6 @@ onMounted(async () => {
 
       <LearnView v-if="store.activeTab === 'learn'" :key="'learn-' + store.currentBook?.id" />
       <ReviewView v-else-if="store.activeTab === 'review'" :key="'review-' + store.currentBook?.id" />
-      <ScenarioView v-else-if="store.activeTab === 'scenario'" :key="'scenario-' + store.currentBook?.id" />
       <ArticlesView v-else-if="store.activeTab === 'articles'" :key="'articles-' + store.currentBook?.id" />
       <ReadingView v-else-if="store.activeTab === 'reading'" :key="'reading-' + store.currentBook?.id" />
       <WordBank v-else-if="store.activeTab === 'wordbank'" />

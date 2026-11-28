@@ -900,28 +900,7 @@ def mark_known(req: KnownIn, user=Depends(current_user)):
         return {"ok": True}
 
 
-# ---------------------------------------------------------------- scenario practice (A + C)
-
-@app.get("/api/scenario/bundle")
-def scenario_bundle(limit: int = 5, user=Depends(current_user)):
-    """Words of the current book plus cached micro-sentences and scene cards.
-
-    Scenario content is generated once and cached; it never touches progress.
-    """
-    if limit < 1 or limit > 10:
-        raise HTTPException(status_code=400, detail="limit 需在 1～10 之间")
-    with transaction() as conn:
-        book = book_row(conn, user["book_id"])
-        words = scenario_service.scenario_words(conn, user["id"], book["id"], limit)
-        items = []
-        for w in words:
-            ex = scenario_service.ensure_example(conn, w["id"], book["id"], book)
-            sc = scenario_service.ensure_scene(conn, w["id"], book["id"], book)
-            items.append({"id": w["id"], "word": w["word"],
-                          "translation": w["translation"], "pos": w["pos"],
-                          "example": ex, "scene": sc})
-        return {"book_id": book["id"], "book_name": book["name"], "items": items}
-
+# ---------------------------------------------------------------- example cloze in learn module
 
 @app.get("/api/scenario/example")
 def scenario_example(word_id: int, user=Depends(current_user)):
@@ -933,14 +912,28 @@ def scenario_example(word_id: int, user=Depends(current_user)):
         return row
 
 
-@app.get("/api/scenario/scene")
-def scenario_scene(word_id: int, user=Depends(current_user)):
+@app.get("/api/learn/example")
+def learn_example(user=Depends(current_user)):
+    """Micro-sentence cloze for the last word of today's completed learn plan."""
     with transaction() as conn:
         book = book_row(conn, user["book_id"])
-        row = scenario_service.ensure_scene(conn, word_id, book["id"], book)
+        plan = _learn_plan(conn, user["id"], book["id"])
+        if not plan:
+            return {"word": None, "word_id": None, "example": None}
+        row = one(
+            conn,
+            """SELECT w.id, w.word, w.translation, w.pos
+               FROM `progress` p JOIN `word` w ON w.id=p.word_id
+               WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
+               ORDER BY p.id DESC LIMIT 1""",
+            (user["id"], book["id"], plan["id"]),
+        )
         if not row:
-            raise HTTPException(status_code=404, detail="找不到这个单词")
-        return row
+            return {"word": None, "word_id": None, "example": None}
+        ex = scenario_service.ensure_example(conn, row["id"], book["id"], book)
+        return {"word": row["word"], "word_id": row["id"],
+                "translation": row["translation"], "pos": row["pos"],
+                "example": ex}
 
 
 # ---------------------------------------------------------------- daily articles

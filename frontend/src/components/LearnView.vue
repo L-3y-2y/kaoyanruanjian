@@ -19,6 +19,46 @@ const correctFlash = ref(false)
 let flashTimer = null
 const confirmKnown = ref(false)
 
+// 例句填空：五轮学完后，在完成卡片上针对今日最后一个词做一次语境巩固。
+const exampleData = ref(null)
+const exampleAnswer = ref('')
+const exampleFeedback = ref(null)
+const showExampleTranslation = ref(false)
+
+function norm(s) {
+  return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function masked(sentence, word) {
+  const esc = String(word || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return String(sentence || '').replace(new RegExp(`\\b${esc}\\w*\\b`, 'i'), '______')
+}
+
+async function loadExample() {
+  try {
+    const r = await api('/api/learn/example')
+    exampleData.value = r.word ? r : null
+  } catch {
+    exampleData.value = null
+  }
+}
+
+function checkExample() {
+  if (!exampleData.value || exampleFeedback.value !== null) return
+  exampleFeedback.value = norm(exampleAnswer.value) === norm(exampleData.value.word)
+}
+
+watch(() => state.value?.kind, (kind) => {
+  if (kind === 'learning_done') {
+    exampleAnswer.value = ''
+    exampleFeedback.value = null
+    showExampleTranslation.value = false
+    loadExample()
+  } else {
+    exampleData.value = null
+  }
+})
+
 const progressPct = computed(() => {
   const s = state.value
   if (!s) return 0
@@ -184,6 +224,22 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
         <button class="primary" @click="goTab('articles')">去看每日短文</button>
         <button class="ghost" @click="goTab('review')">去复习板块</button>
       </div>
+
+      <div class="example-box" v-if="exampleData">
+        <p class="muted small">例句填空 · 在语境里再用一次「{{ exampleData.word }}」</p>
+        <p class="example-sentence">{{ masked(exampleData.example?.sentence, exampleData.word) }}</p>
+        <div class="answer-row">
+          <input v-model="exampleAnswer" :disabled="exampleFeedback !== null"
+                 placeholder="填入挖空的单词" @keyup.enter="checkExample" />
+          <button class="primary" :disabled="exampleFeedback !== null" @click="checkExample">检查</button>
+        </div>
+        <p v-if="exampleFeedback === true" class="ok-note">✓ 填对了，就是「{{ exampleData.word }}」</p>
+        <p v-if="exampleFeedback === false" class="bad-note">✗ 再想想，正确答案是「{{ exampleData.word }}」</p>
+        <button class="ghost tiny" @click="showExampleTranslation = !showExampleTranslation">
+          {{ showExampleTranslation ? '收起翻译' : '看例句翻译' }}
+        </button>
+        <p v-if="showExampleTranslation" class="muted">{{ exampleData.example?.translation }}</p>
+      </div>
     </section>
 
     <section v-else-if="state?.kind?.startsWith('r')" class="card quiz">
@@ -315,5 +371,13 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
   justify-content: space-between;
   font-size: 12.5px;
   color: var(--muted);
+}
+.example-box {
+  margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--line-strong);
+}
+.example-sentence {
+  font-size: 17px; line-height: 1.7; font-weight: 600;
+  margin: 12px 0; padding: 14px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--card); color: var(--ink);
 }
 </style>

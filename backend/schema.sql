@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   INDEX `idx_session` (`session_id`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Scenario-based learning (A: micro-sentences, C: visual scene cards).
+-- Micro-sentence cloze used on the learn completion card.
 -- Generated lazily per word + book and cached; NEVER writes progress.
 CREATE TABLE IF NOT EXISTS `word_example` (
   `id`         INT AUTO_INCREMENT PRIMARY KEY,
@@ -221,19 +221,6 @@ CREATE TABLE IF NOT EXISTS `word_example` (
   `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_example_word_book_seq` (`word_id`,`book_id`,`seq`),
   INDEX `idx_example_word` (`word_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS `word_scene` (
-  `id`          INT AUTO_INCREMENT PRIMARY KEY,
-  `word_id`     INT NOT NULL,
-  `book_id`     INT NOT NULL DEFAULT 1,
-  `scene_text`  VARCHAR(512) NOT NULL,
-  `image_prompt` VARCHAR(512) NULL,
-  `image_url`   VARCHAR(1024) NULL,
-  `source`      VARCHAR(32)  NOT NULL DEFAULT 'llm',
-  `created_at`  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY `uk_scene_word_book` (`word_id`,`book_id`),
-  INDEX `idx_scene_word` (`word_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Study-time dashboard: one row per (user, day), seconds accumulated via the
