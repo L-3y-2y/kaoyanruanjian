@@ -1,32 +1,51 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { store, logout } from '../store.js'
 import OverviewPanel from './admin/OverviewPanel.vue'
 import LearnersPanel from './admin/LearnersPanel.vue'
-import WordsPanel from './admin/WordsPanel.vue'
-import ModelDrawer from './admin/ModelDrawer.vue'
+import ModelPanelAdmin from './admin/ModelPanelAdmin.vue'
+import WordBank from './WordBank.vue'
 
 const NAV = [
-  { key: 'overview', label: '概览', ico: '▤' },
-  { key: 'learners', label: '学员', ico: '◔' },
-  { key: 'words',    label: '词库', ico: '▣' },
+  { key: 'overview', label: '数据概览', ico: '▤', group: '运营' },
+  { key: 'learners', label: '学员看板', ico: '◔', group: '运营' },
+  { key: 'words',    label: '词库管理', ico: '▣', group: '内容' },
+  { key: 'model',    label: '模型与成本', ico: '⚙', group: '系统' },
 ]
-const PANEL = { overview: OverviewPanel, learners: LearnersPanel, words: WordsPanel }
 
-const allowed = computed(() => !!store.me?.is_admin || !!store.me?.local)
-const panel = computed(() => PANEL[store.adminTab] || OverviewPanel)
-const title = computed(() => (NAV.find(n => n.key === store.adminTab) || NAV[0]).label)
-const sub = computed(() => {
-  if (store.adminTab === 'learners') return `${store.learnersTotal} 名注册学员 · 越需要处理越靠前`
-  if (store.adminTab === 'words') return `全库 ${store.health?.word_count ?? '—'} 词 · 按最近修改`
-  return '今天有没有事情需要我做'
+const groups = computed(() => {
+  const out = []
+  for (const n of NAV) {
+    let g = out.find(x => x.name === n.group)
+    if (!g) { g = { name: n.group, items: [] }; out.push(g) }
+    g.items.push(n)
+  }
+  return out
 })
 
-const drawer = ref(false)
-const panelKey = ref(0)
+const allowed = computed(() => !!store.me?.is_admin || !!store.me?.local)
+const current = computed(() => NAV.find(n => n.key === store.adminTab) || NAV[0])
+const title = computed(() => ({
+  overview: '数据概览', learners: '学员看板', words: '词库管理', model: '模型与成本',
+}[store.adminTab] || '数据概览'))
+const crumb = computed(() => {
+  if (store.adminTab === 'learners') return `共 ${store.learnersTotal} 名注册学员`
+  if (store.adminTab === 'words') return `词库 ${store.health?.word_count ?? '—'} 词`
+  if (store.adminTab === 'model') return `当前 ${store.modelInfo?.current || '未配置'}`
+  return '只看能带来动作的数字'
+})
 
+onMounted(() => {
+  if (!store.health) store.error = ''
+})
+
+function go(key) {
+  store.adminTab = key
+}
 async function signOut() {
   await logout()
+  // 管理端登出后仍停在管理端：重新加载会回到管理员登录页，不会掉回学员端。
+  store.adminTab = 'overview'
   window.location.reload()
 }
 </script>
@@ -36,54 +55,56 @@ async function signOut() {
     <aside class="adm-side">
       <div class="adm-brand">
         <i>研</i>
-        <div><b>考研英语</b><span>管理</span></div>
+        <div><b>考研英语</b><span>管理控制台</span></div>
       </div>
 
       <template v-if="allowed">
-        <button v-for="n in NAV" :key="n.key" class="adm-nav"
-                :class="{ on: store.adminTab === n.key }" @click="store.adminTab = n.key">
-          <em>{{ n.ico }}</em>{{ n.label }}
-          <span v-if="n.key === 'learners' && store.learnersTotal" class="cnt">{{ store.learnersTotal }}</span>
-        </button>
-
-        <div class="adm-side-foot">
-          <button class="adm-stat" @click="drawer = true">
-            <span>生成</span>
-            <b>{{ store.modelInfo?.configured ? (store.modelInfo.current || '已接入') : '本地模板' }}</b>
+        <div v-for="g in groups" :key="g.name">
+          <div class="adm-side-h">{{ g.name }}</div>
+          <button v-for="n in g.items" :key="n.key"
+                  class="adm-nav" :class="{ on: store.adminTab === n.key }"
+                  @click="go(n.key)">
+            <em>{{ n.ico }}</em>{{ n.label }}
           </button>
-          <div class="adm-stat static"><span>词库</span><b>{{ store.health?.word_count ?? '—' }} 词</b></div>
-          <div class="adm-stat static"><span>库</span><b>{{ store.health?.database || '—' }}</b></div>
         </div>
       </template>
+
+      <div class="adm-side-foot">
+        v1.0 · 生产环境<br />
+        {{ store.health?.database || 'kaoyanruanjian' }} ·
+        {{ store.health?.word_count ?? '—' }} 词
+      </div>
     </aside>
 
     <main class="adm-main">
       <header class="adm-head">
         <div>
-          <h2>{{ allowed ? title : '没有管理权限' }}</h2>
-          <div class="sub">{{ allowed ? sub : '这个页面只对管理员开放' }}</div>
+          <h2>{{ allowed ? title : '需要管理员账号' }}</h2>
+          <div class="adm-crumb">{{ allowed ? crumb : '这个页面只对管理员开放' }}</div>
         </div>
         <div class="adm-head-r">
-          <button class="adm-btn" v-if="allowed" @click="panelKey++">刷新</button>
-          <button class="adm-btn ghost" @click="signOut">退出</button>
+          <button class="adm-btn" @click="signOut">退出</button>
+          <div class="adm-ava">{{ store.me?.is_admin ? '管' : (store.me?.username || '我').slice(0, 1).toUpperCase() }}</div>
         </div>
       </header>
 
-      <section v-if="!allowed" class="adm-card">
-        <div class="adm-pad">
-          <p class="adm-muted" style="margin:0 0 12px">
-            当前账号 <b>{{ store.me?.username }}</b> 不是管理员。退出后用管理员账号登录即可。
-          </p>
-          <button class="adm-btn solid" @click="signOut">退出登录</button>
+      <div v-if="!allowed" class="adm-card">
+        <p style="margin-top:0">
+          当前账号 <b>{{ store.me?.username }}</b> 不是管理员。管理端只接受管理员账号登录，
+          请退出后用管理员账号重新进入。
+        </p>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="adm-btn pri" @click="signOut">退出并重新登录</button>
         </div>
-      </section>
+      </div>
 
       <template v-else>
         <p class="error" v-if="store.error">{{ store.error }}</p>
-        <component :is="panel" :key="store.adminTab + '-' + panelKey" />
+        <OverviewPanel v-if="store.adminTab === 'overview'" />
+        <LearnersPanel v-else-if="store.adminTab === 'learners'" />
+        <ModelPanelAdmin v-else-if="store.adminTab === 'model'" />
+        <div v-else-if="store.adminTab === 'words'" class="adm-narrow"><WordBank /></div>
       </template>
-
-      <ModelDrawer v-if="drawer" @close="drawer = false" />
     </main>
   </div>
 </template>

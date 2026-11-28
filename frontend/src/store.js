@@ -151,6 +151,13 @@ export async function logout() {
 export async function onAuthDone() {
   store.showAuth = false
   await loadMe()
+
+  // 管理员账号没有学员身份，登录后直接进管理端，不要先掉进背单词页面。
+  if (store.me?.is_admin) {
+    window.location.replace('/admin')
+    return
+  }
+
   await loadBooks()
   await refreshHeader()
   await loadTodayStats()

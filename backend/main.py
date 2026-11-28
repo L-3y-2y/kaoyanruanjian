@@ -1376,18 +1376,13 @@ def admin_overview(days: int = 14, user=Depends(require_admin)):
         )
         hot = query(
             conn,
-            """SELECT w.word, w.translation,
-                      COALESCE(SUM(a.correct=0),0) AS errors,
-                      COUNT(*) AS attempts,
-                      MAX(a.created_at) AS last_at
+            """SELECT w.word, w.translation, COUNT(*) AS errors
                FROM `answer_log` a JOIN `word` w ON w.id=a.word_id
-               WHERE a.kind='cloze' AND a.created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)
+               WHERE a.kind='cloze' AND a.correct=0
+                 AND a.created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)
                GROUP BY w.id, w.word, w.translation
-               HAVING errors>0
                ORDER BY errors DESC, w.word ASC LIMIT 8""",
         )
-        for r in hot:
-            r["last_at"] = str(r["last_at"])[:16] if r["last_at"] else None
         sources = query(
             conn,
             """SELECT COALESCE(source,'unknown') AS source, COUNT(*) AS c

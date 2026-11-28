@@ -9,22 +9,16 @@ const loading = ref(false)
 const error = ref('')
 const notice = ref('')
 const q = ref('')
-const filter = ref('all')      // all / stable / wobble / lost
-const sortKey = ref('need')    // need(默认：越需要处理越前) / today / mastered / due / errors
+const filter = ref('all')     // all / stable / wobble / lost
+const sortKey = ref('idle')   // idle / mastered / due / errors / today
+const desc = ref(true)
 
 const STATE = {
   stable: { label: '稳定', cls: 'ok' },
   wobble: { label: '波动', cls: 'warn' },
   lost:   { label: '掉队', cls: 'bad' },
-  never:  { label: '未开始', cls: '' },
+  never:  { label: '未开始', cls: 'mut' },
 }
-
-const FILTERS = computed(() => ([
-  { k: 'all', t: '全部', n: summary.value.total },
-  { k: 'stable', t: '稳定', n: summary.value.stable },
-  { k: 'wobble', t: '波动', n: summary.value.wobble },
-  { k: 'lost', t: '掉队', n: summary.value.lost },
-]))
 
 const list = computed(() => {
   let out = rows.value
@@ -35,32 +29,41 @@ const list = computed(() => {
   }
   const k = q.value.trim().toLowerCase()
   if (k) out = out.filter(r => r.username.toLowerCase().includes(k) || r.book.toLowerCase().includes(k))
-  if (sortKey.value === 'need') return out
   const pick = {
-    today: r => r.today_items,
+    idle: r => r.days_idle ?? 999,
     mastered: r => r.mastered,
     due: r => r.due,
     errors: r => r.cloze_errors,
+    today: r => r.today_items,
   }[sortKey.value]
-  return [...out].sort((a, b) => pick(b) - pick(a))
+  out = [...out].sort((a, b) => desc.value ? pick(b) - pick(a) : pick(a) - pick(b))
+  return out
 })
+
+function share(n) {
+  const t = summary.value.total || 0
+  return t ? Math.round(n / t * 100) + '%' : '—'
+}
 
 const lostNames = computed(() =>
   rows.value.filter(r => r.state === 'lost' || r.state === 'never').map(r => r.username))
 
 function sortBy(k) {
-  sortKey.value = sortKey.value === k ? 'need' : k
+  if (sortKey.value === k) desc.value = !desc.value
+  else { sortKey.value = k; desc.value = true }
+}
+function arrow(k) {
+  return sortKey.value === k ? (desc.value ? ' ↓' : ' ↑') : ''
 }
 
 async function copyLost() {
   notice.value = ''
-  if (!lostNames.value.length) { notice.value = '没有掉队的学员。'; return }
-  const text = lostNames.value.join('、')
+  if (!lostNames.value.length) { notice.value = '没有掉队学员。'; return }
   try {
-    await navigator.clipboard.writeText(text)
-    notice.value = `已复制 ${lostNames.value.length} 个用户名`
+    await navigator.clipboard.writeText(lostNames.value.join('、'))
+    notice.value = `已复制 ${lostNames.value.length} 个用户名，可以逐个提醒。`
   } catch {
-    notice.value = `掉队：${text}`
+    notice.value = `掉队学员：${lostNames.value.join('、')}`
   }
 }
 
@@ -82,57 +85,72 @@ onMounted(load)
 <template>
   <div>
     <p class="error" v-if="error">{{ error }}</p>
-    <p class="adm-note" v-if="notice" style="margin:0 0 10px;color:var(--primary-deep)">{{ notice }}</p>
+    <p class="notice" v-if="notice">{{ notice }}</p>
+
+    <div class="adm-kpis" style="grid-template-columns:repeat(4,1fr)">
+      <button v-for="c in [
+        { k: 'all', t: '全部学员', v: summary.total, cls: '' },
+        { k: 'stable', t: '稳定学习', v: summary.stable, cls: 'ok' },
+        { k: 'wobble', t: '中途波动', v: summary.wobble, cls: 'warn' },
+        { k: 'lost', t: '掉队 / 未开始', v: summary.lost, cls: 'bad' },
+      ]" :key="c.k" class="adm-kpi adm-kpi-btn" :class="{ on: filter === c.k }"
+          @click="filter = c.k">
+        <div class="adm-kpi-l"><span>{{ c.t }}</span></div>
+        <div class="adm-kpi-n">{{ c.v }}<small>人</small></div>
+        <div class="adm-kpi-s">
+          {{ c.k === 'all' ? '点卡片按状态筛选' : `占比 ${share(c.v)}` }}
+        </div>
+      </button>
+    </div>
 
     <section class="adm-card">
-      <div class="adm-bar">
-        <span class="lbl">状态</span>
-        <div class="adm-chips">
-          <button v-for="f in FILTERS" :key="f.k" class="adm-chip"
-                  :class="{ on: filter === f.k }" @click="filter = f.k">
-            {{ f.t }} <b>{{ f.n }}</b>
-          </button>
+      <div class="adm-card-h">
+        <h3>学员进度</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input v-model="q" class="adm-search" placeholder="搜索用户名 / 书籍" />
+          <button class="adm-btn" @click="load">刷新</button>
+          <button class="adm-btn" :disabled="!lostNames.length" @click="copyLost">复制掉队名单</button>
         </div>
-        <input v-model="q" class="adm-input" style="width:190px;margin-left:auto" placeholder="搜用户名 / 书籍" />
-        <button class="adm-btn" @click="copyLost" :disabled="!lostNames.length">复制掉队名单</button>
       </div>
 
-      <p class="adm-empty" v-if="loading && !rows.length">正在读取…</p>
-      <p class="adm-empty" v-else-if="!list.length">没有符合条件的学员。</p>
+      <p class="adm-muted" v-if="loading && !rows.length">正在读取…</p>
+      <p class="adm-muted" v-else-if="!list.length">没有符合条件的学员。</p>
 
       <div class="adm-table-wrap" v-else>
-        <table class="adm-table wide">
+        <table class="adm-table">
           <thead>
             <tr>
-              <th style="width:150px">学员</th>
-              <th>书籍</th>
-              <th class="num sort" @click="sortBy('today')">今日{{ sortKey === 'today' ? ' ↓' : '' }}</th>
-              <th class="num sort" @click="sortBy('mastered')">已掌握{{ sortKey === 'mastered' ? ' ↓' : '' }}</th>
-              <th class="num sort" @click="sortBy('due')">积压{{ sortKey === 'due' ? ' ↓' : '' }}</th>
-              <th class="num sort" @click="sortBy('errors')">错题{{ sortKey === 'errors' ? ' ↓' : '' }}</th>
-              <th>最近学习</th>
-              <th style="width:72px">状态</th>
+              <th>学员</th>
+              <th>当前书籍</th>
+              <th class="num" @click="sortBy('today')">今日答题{{ arrow('today') }}</th>
+              <th class="num" @click="sortBy('mastered')">已掌握{{ arrow('mastered') }}</th>
+              <th class="num" @click="sortBy('due')">复习积压{{ arrow('due') }}</th>
+              <th class="num" @click="sortBy('errors')">语境错题{{ arrow('errors') }}</th>
+              <th @click="sortBy('idle')">最近学习{{ arrow('idle') }}</th>
+              <th>状态</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="r in list" :key="r.id">
-              <td><span class="w">{{ r.username }}</span><span class="adm-uid">#{{ r.id }}</span></td>
-              <td class="dim">{{ r.book }}</td>
+              <td><b>{{ r.username }}</b><span class="adm-uid">#{{ r.id }}</span></td>
+              <td class="adm-muted">{{ r.book }}</td>
               <td class="num">{{ r.today_items || '—' }}</td>
               <td class="num">{{ r.mastered }}</td>
               <td class="num" :class="{ hot: r.due > 20 }">{{ r.due }}</td>
               <td class="num" :class="{ hot: r.cloze_errors > 5 }">{{ r.cloze_errors }}</td>
-              <td class="dim">{{ r.last_at ? r.last_at.slice(0, 16) : '从未' }}</td>
+              <td class="adm-muted">
+                {{ r.last_at ? r.last_at.slice(5, 16) : '从未学习' }}
+              </td>
               <td><span class="adm-pill" :class="STATE[r.state].cls">{{ STATE[r.state].label }}</span></td>
             </tr>
           </tbody>
         </table>
       </div>
-    </section>
 
-    <p class="adm-note">
-      排序默认按「越需要处理越靠前」，点列头改成按数字排。稳定 = 2 天内有答题，
-      波动 = 断 2–3 天，掉队 = 超过 3 天；积压超 20 词、错题超 5 个的行会标红。
-    </p>
+      <p class="adm-tip">
+        「稳定」= 最近 2 天内有答题；「波动」= 断 2–3 天；「掉队」= 超过 3 天没来。
+        复习积压超过 20 词、语境错题超过 5 个的行会标红，优先处理这两类人。
+      </p>
+    </section>
   </div>
 </template>
