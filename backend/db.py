@@ -5,6 +5,8 @@ hard-locked to kaoyanruanjian so all runtime data lands in one place.
 """
 
 import os
+import queue
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -42,19 +44,139 @@ def connect():
     )
 
 
+# A single handshake (TCP + MySQL auth) costs 18-49 ms on this machine, and
+# every endpoint used to pay it once per request. A small fixed pool removes
+# that cost while capping the number of MySQL sessions the app can open.
+# pymysql connections are NOT thread-safe, but the pool only ever hands one
+# connection to one thread at a time, so no connection is shared concurrently.
+POOL_SIZE = max(1, int(os.getenv("DB_POOL_SIZE", "16")))
+POOL_WAIT = float(os.getenv("DB_POOL_WAIT", "15"))
+
+
+class ConnectionPool:
+    """LIFO pool of pymysql connections with liveness ping on checkout."""
+
+    def __init__(self, size):
+        self.size = size
+        self._idle = queue.LifoQueue(maxsize=size)
+        self._slots = threading.BoundedSemaphore(size)
+        self._lock = threading.Lock()
+        self.opened = 0      # connections created since start
+        self.reused = 0      # checkouts served from an idle connection
+        self.reconnected = 0  # idle connections that had died and were replaced
+        self.waited = 0      # checkouts that had to wait for a free slot
+
+    def acquire(self):
+        # The semaphore is acquired BEFORE the idle queue so a connection can
+        # never be checked out twice: at most `size` checkouts exist at once.
+        if not self._slots.acquire(blocking=False):
+            with self._lock:
+                self.waited += 1
+            if not self._slots.acquire(timeout=POOL_WAIT):
+                raise RuntimeError(
+                    f"数据库连接池已满（{self.size} 个连接被占用超过 {POOL_WAIT:.0f} 秒），"
+                    "请稍后重试"
+                )
+        try:
+            conn = self._idle.get_nowait()
+        except queue.Empty:
+            conn = None
+        if conn is not None:
+            try:
+                # reconnect=True transparently replaces a session killed by
+                # MySQL's wait_timeout; that is the normal idle case here.
+                conn.ping(reconnect=True)
+                with self._lock:
+                    self.reused += 1
+                return conn
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self.reconnected += 1
+        try:
+            conn = connect()
+        except Exception:
+            self._slots.release()
+            raise
+        with self._lock:
+            self.opened += 1
+        return conn
+
+    def release(self, conn, broken=False):
+        try:
+            if conn is None:
+                return
+            if broken:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                return
+            try:
+                # A recycled connection must never carry an open transaction.
+                conn.rollback()
+                self._idle.put_nowait(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        finally:
+            self._slots.release()
+
+    def stats(self):
+        with self._lock:
+            return {"size": self.size, "idle": self._idle.qsize(),
+                    "opened": self.opened, "reused": self.reused,
+                    "reconnected": self.reconnected, "waited": self.waited}
+
+
+pool = ConnectionPool(POOL_SIZE)
+
+
 @contextmanager
 def transaction():
-    """One request = one transaction. Progress update and answer log commit together."""
-    conn = connect()
+    """One request = one transaction. Progress update and answer log commit together.
+
+    The connection comes from the pool and always goes back to it, including on
+    error paths; a connection whose rollback failed is discarded rather than
+    recycled in an unknown state.
+    """
+    conn = pool.acquire()
+    broken = False
     try:
         conn.begin()
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            broken = True
         raise
     finally:
-        conn.close()
+        pool.release(conn, broken=broken)
+
+
+@contextmanager
+def reader():
+    """Pooled connection for read-only work (auth lookup, health probe).
+
+    Avoids opening a fresh MySQL session per request just to run one SELECT;
+    no explicit BEGIN, and release() rolls back so nothing is left dangling.
+    """
+    conn = pool.acquire()
+    broken = False
+    try:
+        yield conn
+    except Exception:
+        broken = True
+        raise
+    finally:
+        pool.release(conn, broken=broken)
 
 
 def query(conn, sql, args=()):

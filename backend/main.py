@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from content import (
 )
 import dict_lookup
 from db import DB_NAME, connect, execute, init_schema, one, query, transaction
+from db import pool as db_pool
 from llm import (
     GenerationFailed, NoProvider, available_models, configured as llm_configured,
     current_model, switch_model, test_model,
@@ -45,6 +47,10 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "frontend" / "dist"
 _scheduler_stop = threading.Event()
 REVIEW_INTERVALS = (1, 2, 4, 7, 15, 30)
+# /api/health is polled by the UI; its two COUNT(*) queries are the only slow
+# part, so they are cached for this long. Mutated only by health().
+HEALTH_META_TTL = 30.0
+_HEALTH_META = {"at": 0.0, "word_count": 0, "tables": 0}
 
 
 def _publish_due_week():
@@ -469,28 +475,32 @@ class WordIn(BaseModel):
 
 @app.get("/api/health")
 def health():
-    conn = connect()
-    try:
-        # Only expose the minimum needed by the UI. The DB account name used to
-        # be returned here (CURRENT_USER()) and shown in the topbar; that is an
-        # unnecessary information leak once the app is reachable off-machine.
+    # word_count / table count change only on an admin import, so they are
+    # cached: the topbar polls this endpoint and information_schema scans are
+    # the most expensive thing on it. DATABASE()/CURDATE() still hit the DB so
+    # a dead MySQL is still reported honestly.
+    global _HEALTH_META
+    with transaction() as conn:
         info = one(conn, "SELECT DATABASE() AS db, CURDATE() AS today")
-        tables = one(conn,
-                     "SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema=%s",
-                     (DB_NAME,))
-        words = one(conn, "SELECT COUNT(*) AS c FROM `word`")
-        return {
-            "ok": True,
-            "database": info["db"],
-            "tables": tables["c"],
-            "word_count": words["c"],
-            "server_date": str(info["today"]),
-            "llm_configured": llm_configured(),
-            "llm_model": current_model(),
-            "local_mode": LOCAL_MODE,
-        }
-    finally:
-        conn.close()
+        fresh = (time.time() - _HEALTH_META["at"]) < HEALTH_META_TTL
+        if not fresh:
+            words = one(conn, "SELECT COUNT(*) AS c FROM `word`")
+            tables = one(conn,
+                         "SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema=%s",
+                         (DB_NAME,))
+            _HEALTH_META = {"at": time.time(), "word_count": int(words["c"]),
+                            "tables": int(tables["c"])}
+    return {
+        "ok": True,
+        "database": info["db"],
+        "tables": _HEALTH_META["tables"],
+        "word_count": _HEALTH_META["word_count"],
+        "server_date": str(info["today"]),
+        "llm_configured": llm_configured(),
+        "llm_model": current_model(),
+        "local_mode": LOCAL_MODE,
+        "pool": db_pool.stats(),
+    }
 
 
 @app.get("/api/llm/models")

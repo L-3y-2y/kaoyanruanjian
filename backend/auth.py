@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
 
-from db import connect, execute, one, transaction
+from db import execute, one, reader, transaction
 
 COOKIE = "ky_session"
 SESSION_DAYS = 30
@@ -110,8 +110,7 @@ def resolve_user(request: Request):
     """Return the current identity. Never trust a user id sent by the browser."""
     token = request.cookies.get(COOKIE)
     if token:
-        conn = connect()
-        try:
+        with reader() as conn:
             row = one(
                 conn,
                 """SELECT s.user_id, s.is_admin, u.username, u.current_book_id
@@ -128,8 +127,6 @@ def resolve_user(request: Request):
                    WHERE s.token=%s AND s.expires_at > NOW() AND s.is_admin=1""",
                 (token,),
             )
-        finally:
-            conn.close()
         if row:
             return {"id": row["user_id"], "username": row["username"],
                     "is_admin": 0, "local": False,
@@ -142,11 +139,8 @@ def resolve_user(request: Request):
                     "book_id": int(admin["current_book_id"] or 1)}
     if LOCAL_MODE and _local_allowed(request):
         # The local placeholder is a real `user` row, so honour its book too.
-        conn = connect()
-        try:
+        with reader() as conn:
             local_row = one(conn, "SELECT current_book_id FROM `user` WHERE id=1")
-        finally:
-            conn.close()
         return {"id": 1, "username": "local", "is_admin": 0, "local": True,
                 "book_id": int((local_row or {}).get("current_book_id") or 1)}
     raise HTTPException(status_code=401, detail="请先登录")
