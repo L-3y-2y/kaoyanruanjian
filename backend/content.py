@@ -19,7 +19,9 @@ from datetime import date, datetime, time, timedelta
 from pymysql.err import IntegrityError
 
 from db import detach_for_llm, execute, one, query
-from llm import GenerationFailed, NoProvider, configured, generate_json, grade_subjective
+from exam_profile import profile_for, qtypes_for, word_range
+from llm import (GenerationFailed, NoProvider, configured, generate_json,
+                 generate_text, grade_subjective)
 import dict_lookup
 
 WORDS_PER_ARTICLE = 12
@@ -84,11 +86,10 @@ def book_context(book):
     """Prompt fragment: keep article difficulty and exam style on the shelf."""
     if not book:
         return ""
-    exam = book.get("exam_type") or "考研英语"
+    p = profile_for(book)
     return (
-        f"\nThe learner is preparing for {exam}. Match the reading difficulty, "
-        f"sentence length and vocabulary level to {exam}; do not mention the "
-        f"exam name inside the passage or questions."
+        f"\nThe learner is preparing for {p['exam_en']}. {p['level']} "
+        "Do not mention the exam name inside the passage or questions."
     )
 
 
@@ -237,17 +238,20 @@ def _local_article(words, seq):
     return "\n".join(lines)
 
 
-def _article_prompt(words, missing=None, scene="default", book=None):
+def _article_prompt(words, missing=None, scene="default", book=None, kind="daily"):
     word_list = "\n".join(
         f'- {r["word"].strip()} [{r.get("pos") or "word"}]: {r.get("translation") or ""}'
         for r in words
     )
+    lo, hi = word_range(profile_for(book), kind)
+    paras = max(3, round(lo / 60))
     instruction = (
-        "You write short English passages for Chinese postgraduate entrance exam "
-        "students. Return ONLY a JSON object with exactly two keys: "
+        "You write English passages for Chinese learners who are preparing for an "
+        "English exam. Return ONLY a JSON object with exactly two keys: "
         '{"title": "short English title", "body": "the passage"}. '
-        "Write ONE coherent passage of 120-160 words in simple, natural sentences; "
-        "it must read like a passage, not a word list. Every target word below must "
+        f"Write ONE coherent passage of {lo}-{hi} words: about {paras} paragraphs, "
+        "55-70 words each. Do not stop early — a draft under "
+        f"{lo} words will be sent back for expansion. Every target word below must "
         "appear at least once (inflected forms such as plurals or past tense are "
         "fine). Use the Chinese gloss only to choose the right meaning. No "
         "translations, bullet points, headings or commentary outside the JSON."
@@ -271,10 +275,116 @@ def _article_valid(data):
     return isinstance(body, str) and len(body.split()) >= 60
 
 
-def _llm_article(words, seq, scene="default", book=None):
-    """Return (title, body, provider). Coverage uses the SAME lemma map as marking."""
-    data, provider = generate_json(_article_prompt(words, scene=scene, book=book),
-                                   validator=_article_valid, max_tokens=900)
+def _clean_para(text):
+    """Strip numbering / quotes / markdown a model sometimes adds to a paragraph."""
+    t = (text or "").strip()
+    t = re.sub(r"^\s*(paragraph|para)\s*\d+\s*[:.\-]\s*", "", t, flags=re.I)
+    t = t.strip().strip('"').strip("“”").strip("'").strip()
+    t = re.sub(r"[*_#`]+", "", t)
+    return t.strip()
+
+
+def _segment_prompt(groups, done, idx, total, want, scene, book, closing=False):
+    p = profile_for(book)
+    prev = " ".join(done)[-700:]
+    head = (
+        f"You are writing paragraph {idx + 1} of {total} of ONE continuous English "
+        f"passage for a learner preparing for {p['exam_en']}. "
+        f"Length: {want - 8} to {want + 8} words. "
+    )
+    if done:
+        head += (f'The passage so far ends with: "...{prev}" Continue the same topic '
+                 "naturally, without repeating earlier sentences. ")
+    else:
+        head += "This is the opening paragraph; introduce the topic clearly. "
+    if closing:
+        head += ("This is the closing paragraph: wrap up the passage while using "
+                 "these words naturally: " + ", ".join(groups) + ". ")
+    elif groups:
+        head += ("Use these words naturally in this paragraph: "
+                 + ", ".join(groups) + ". ")
+    if scene and scene != "default":
+        head += "Scene: " + SCENES.get(scene, SCENES["default"]) + ". "
+    head += ("Do not mention the exam name (or the exam itself) inside the passage. "
+             "Output ONLY the paragraph text — no title, no numbering, no quotes, "
+             "no commentary.")
+    return head
+
+
+def _llm_article_paged(words, seq, scene, book, kind):
+    """Build a full-length passage one paragraph at a time.
+
+    A single request to a small/free model reliably stops at ~100-130 words no
+    matter how the prompt asks for 300 — measured, not guessed. Asking for one
+    short paragraph per call and stitching enough of them gives a passage that
+    really matches the shelf's length, while the running tail keeps it coherent.
+    """
+    lo, _hi = word_range(profile_for(book), kind)
+    per = 60
+    # Measured on glm-4-flash: a "60-70 word paragraph" request returns ~45
+    # words, and the shortfall does not shrink with bigger asks. So the number of
+    # paragraphs, not the per-paragraph target, is what controls total length.
+    total = max(3, min(8, round(lo / 40)))
+    groups = [[] for _ in range(total)]
+    for i, w in enumerate(words):
+        groups[i % total].append(w["word"].strip())
+
+    parts, provider = [], "local"
+    for i in range(total):
+        prompt = _segment_prompt(groups[i], parts, i, total, per, scene, book)
+        text, provider = generate_text(prompt, max_tokens=520, timeout=60)
+        cleaned = _clean_para(text)
+        if cleaned:
+            parts.append(cleaned)
+    body = "\n\n".join(parts)
+
+    # Hard cap of one make-up paragraph if the model came in short overall.
+    if len(body.split()) < int(lo * 0.85):
+        try:
+            prompt = _segment_prompt([], parts, total, total + 1, per, scene, book)
+            text, provider = generate_text(prompt, max_tokens=520, timeout=60)
+            cleaned = _clean_para(text)
+            if cleaned:
+                parts.append(cleaned)
+                body = "\n\n".join(parts)
+        except (GenerationFailed, NoProvider):
+            pass
+
+    # Every target word must still appear; a short closing paragraph mops up any
+    # word the per-paragraph assignment did not land.
+    covered = {m["word_id"] for m in scan_article_words(body, words)}
+    missing = [w for w in words if w["id"] not in covered]
+    if missing:
+        try:
+            prompt = _segment_prompt([w["word"].strip() for w in missing],
+                                     parts, total, total + 1, 70, scene, book,
+                                     closing=True)
+            text, provider = generate_text(prompt, max_tokens=420, timeout=60)
+            cleaned = _clean_para(text)
+            if cleaned:
+                body += "\n\n" + cleaned
+        except (GenerationFailed, NoProvider):
+            pass
+    return "", body, provider
+
+
+def _llm_article(words, seq, scene="default", book=None, kind="daily"):
+    """Return (title, body, provider). Coverage uses the SAME lemma map as marking.
+
+    Free-tier models undershoot the requested length, and a 120-word "四级阅读"
+    is exactly the mismatch we are fixing here. If the draft is well under the
+    shelf minimum we ask once more, keep the longer draft only when it still
+    covers every target word, and otherwise accept what we have — a short
+    LLM-written passage still beats the robotic local fallback.
+    """
+    lo, _hi = word_range(profile_for(book), kind)
+    if lo > 90:
+        # Every shelf's target length is beyond what one call returns: build the
+        # passage paragraph by paragraph (see _llm_article_paged).
+        return _llm_article_paged(words, seq, scene, book, kind)
+    data, provider = generate_json(_article_prompt(words, scene=scene, book=book, kind=kind),
+                                   validator=_article_valid, max_tokens=1600)
+    title = (data.get("title") or "").strip()
     body = data["body"].strip()
     expected = {r["id"] for r in words}
 
@@ -285,15 +395,30 @@ def _llm_article(words, seq, scene="default", book=None):
     if missing_ids:
         missing = [r["word"] for r in words if r["id"] in missing_ids]
         data2, provider2 = generate_json(
-            _article_prompt(words, missing, scene, book),
-            validator=_article_valid, max_tokens=900)
+            _article_prompt(words, missing, scene, book, kind),
+            validator=_article_valid, max_tokens=1600)
         body2 = data2["body"].strip()
         if expected <= covered(body2):
-            return (data2.get("title") or "").strip(), body2, provider2
-        # Still incomplete: let write_article fall back to the local writer,
-        # which guarantees 100% coverage, instead of bolting on robot sentences.
-        raise GenerationFailed("大模型两次未能覆盖全部目标词")
-    return (data.get("title") or "").strip(), body, provider
+            title = (data2.get("title") or "").strip()
+            body, provider = body2, provider2
+        else:
+            # Still incomplete: let write_article fall back to the local writer,
+            # which guarantees 100% coverage, instead of bolting on robot sentences.
+            raise GenerationFailed("大模型两次未能覆盖全部目标词")
+
+    if len(body.split()) < int(lo * 0.85):
+        try:
+            data3, provider3 = generate_json(
+                "The previous draft was too short for this exam level. Rewrite it "
+                "LONGER, keeping every target word, with no extra commentary.\n\n"
+                + _article_prompt(words, scene=scene, book=book, kind=kind),
+                validator=_article_valid, max_tokens=1600)
+            body3 = data3["body"].strip()
+            if expected <= covered(body3) and len(body3.split()) > len(body.split()):
+                return (data3.get("title") or "").strip(), body3, provider3
+        except (GenerationFailed, NoProvider):
+            pass
+    return title, body, provider
 
 
 def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
@@ -306,7 +431,7 @@ def write_article(conn, *, user_id, kind, plan_id, week_key, seq, words,
     llm_title = ""
     if configured():
         try:
-            llm_title, body, provider = _llm_article(words, seq, scene, book)
+            llm_title, body, provider = _llm_article(words, seq, scene, book, kind)
         except (GenerationFailed, NoProvider):
             body, provider = _local_article(words, seq), "local"
     else:
@@ -387,7 +512,7 @@ def regenerate_article(conn, *, user_id, article_id):
         raise KeyError("batch-words-missing")
     book = one(conn, "SELECT * FROM `book` WHERE id=%s", (art["book_id"],))
     detach_for_llm(conn)  # inputs read; do not hold locks during the LLM call
-    title, body, provider = _llm_article(rows, art["seq"], scene, book)
+    title, body, provider = _llm_article(rows, art["seq"], scene, book, "daily")
     if not title:
         title = f"第 {art['seq']} 篇 · {len(rows)} 词短文"
     execute(
@@ -647,7 +772,7 @@ def week_words(conn, user_id, week_key, book_id=1):
     return rows
 
 
-def _template_questions(article, words):
+def _template_questions(article, words, qtypes=None):
     """Fallback set: four objective questions + one AI-graded short answer."""
     items = []
     picked = [w for w in words if w.get("translation")][:8]
@@ -720,20 +845,38 @@ def _template_questions(article, words):
             "reference_answer": (w2["translation"] or "").strip()[:300],
             "word_id": w2["id"], "ai_graded": 1,
         })
+    if qtypes:
+        # Template set is written for the 5-type paper; trim it to the shelf's
+        # mix so a 四级 learner does not get a 考研-only short answer.
+        pool = list(items)
+        kept = []
+        for qt in qtypes:
+            for it in pool:
+                if it["qtype"] == qt:
+                    kept.append(it)
+                    pool.remove(it)
+                    break
+        if len(kept) == len(qtypes):
+            items = kept
+        for i, it in enumerate(items, start=1):
+            it["sort_no"] = i
     return items
 
 
 def _question_prompt(article, words, book=None):
     word_list = ", ".join(r["word"].strip() for r in words)
-    exam = (book or {}).get("exam_type") or "考研英语"
+    p = profile_for(book)
+    qtypes = list(p["reading"]["qtypes"])
+    n = len(qtypes)
     return (
-        f"You are an experienced {exam} English teacher. "
-        "Read the passage and write 5 exam-style questions. Return ONLY a JSON object "
-        "with one key \"questions\" containing exactly 5 objects, one of each qtype: "
-        "main_idea, vocabulary, detail, inference, subjective. Each object has: "
-        "\"qtype\", \"stem\" (English), and for the four objective types also "
+        f"You are an experienced {p['exam_en']} teacher. "
+        f"Read the passage and write {n} questions that match the real {p['exam_en']} "
+        "paper — neither longer nor harder than that exam requires. "
+        "Return ONLY a JSON object with one key \"questions\" containing exactly "
+        f"{n} objects, one per qtype in this order: {', '.join(qtypes)}. Each object "
+        "has: \"qtype\", \"stem\" (English), and for the objective types also "
         "\"options\" (object with keys A,B,C,D, four plausible choices) and "
-        "\"correct_option\" (A/B/C/D). The subjective object instead has "
+        "\"correct_option\" (A/B/C/D). A subjective object instead has "
         "\"reference_answer\" (Chinese key points for grading). For vocabulary, "
         "detail and subjective, also include \"word\" copied exactly from the target "
         "word list. Distractors must be plausible and related to the passage; do not "
@@ -743,14 +886,13 @@ def _question_prompt(article, words, book=None):
     )
 
 
-def _questions_valid(data):
+def _questions_valid(data, qtypes):
     if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
         return False
     qs = data["questions"]
-    if len(qs) != 5:
+    if len(qs) != len(qtypes):
         return False
-    if {q.get("qtype") for q in qs} != {
-            "main_idea", "vocabulary", "detail", "inference", "subjective"}:
+    if {q.get("qtype") for q in qs} != set(qtypes):
         return False
     for q in qs:
         if not isinstance(q.get("stem"), str) or not q["stem"].strip():
@@ -770,8 +912,10 @@ def _questions_valid(data):
 
 
 def _llm_questions(article, words, book=None):
-    data, _provider = generate_json(_question_prompt(article, words, book),
-                                    validator=_questions_valid, max_tokens=1600)
+    qtypes = qtypes_for(profile_for(book))
+    data, _provider = generate_json(
+        _question_prompt(article, words, book),
+        validator=lambda d: _questions_valid(d, qtypes), max_tokens=1600)
     items = []
     lower = {r["word"].strip().lower(): r["id"] for r in words}
     picked = [w for w in words if w.get("translation")]
@@ -805,7 +949,7 @@ def _questions_for(conn, article_id, user_id, article, words, book=None):
         except (GenerationFailed, NoProvider, ValueError, KeyError, TypeError):
             items = None
     if items is None:
-        items = _template_questions(article, words)
+        items = _template_questions(article, words, qtypes_for(profile_for(book)))
     # Avoid duplicate question sets if a racing request already filled this
     # article while our LLM call was running.
     if one(conn, "SELECT id FROM `question` WHERE article_id=%s LIMIT 1", (article_id,)):

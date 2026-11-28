@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { api } from '../api.js'
 import { store } from '../store.js'
 import PracticeCard from './PracticeCard.vue'
@@ -37,6 +37,8 @@ const busy = ref(false)
 const error = ref('')
 const maxTurns = ref(8)
 const scroller = ref(null)
+// 题目难度跟书架走：四级书就出四级题，不要把考研那套硬套给所有人。
+const exam = computed(() => store.currentBook?.exam_type || '英语')
 
 async function scrollDown() {
   await nextTick()
@@ -110,7 +112,7 @@ async function generateCard(kind) {
     })
     sessionId.value = r.session_id
     title.value = r.title || title.value
-    if (!messages.value.length) messages.value.push({ role: 'user', content: `出一篇考研风格${label}题` })
+    if (!messages.value.length) messages.value.push({ role: 'user', content: `出一篇${exam.value}${label}题` })
     else messages.value.push({ role: 'user', content: `再来一篇${label}` })
     messages.value.push({ role: 'assistant', content: '', card: r.card })
     if (r.turn_count >= maxTurns.value) error.value = `已达 ${maxTurns.value} 轮上限，可以关闭后开始新的答疑。`
@@ -123,6 +125,17 @@ function askAbout(text) {
   input.value = text
   document.querySelector('.chat-input input')?.focus()
 }
+
+// 快捷练习：题目类型、篇幅、评分口径都由当前书架的考试决定（后端 exam_profile.py）。
+function askTranslate(dir) {
+  const text = dir === 'zh2en'
+    ? `出一道${exam.value}汉译英练习：先只给中文（篇幅按${exam.value}的要求），等我翻译成英文后再给参考译文并批改`
+    : `出一道${exam.value}英译汉练习：先只给英文（篇幅按${exam.value}的要求），等我翻译成中文后再给参考译文并批改`
+  quickAsk(text)
+}
+function askWriting() {
+  quickAsk(`出一道${exam.value}写作题：只给题目、字数和提纲，不要范文；等我写完再按${exam.value}的评分标准批改`)
+}
 </script>
 
 <template>
@@ -132,7 +145,7 @@ function askAbout(text) {
       <div class="article-head">
         <div>
           <h2>英语 AI · {{ title }}<span class="book-tag">{{ store.currentBook?.name }}</span></h2>
-          <p class="muted small">中翻英、英翻中、查词、问语法、自由聊天都可以；点「交互」按钮用今天学的词出考研题，直接点选作答、即时判分看解析。从短文或题目进来时会优先结合那段内容。</p>
+          <p class="muted small">中翻英、英翻中、查词、问语法、自由聊天都可以；点「交互」按钮用今天学的词出{{ exam }}题，直接点选作答、即时判分看解析。从短文或题目进来时会优先结合那段内容。</p>
         </div>
       </div>
 
@@ -155,10 +168,9 @@ function askAbout(text) {
       <div class="chat-quick">
         <button type="button" :disabled="busy" @click="generateCard('cloze')">选词填空 · 交互</button>
         <button type="button" :disabled="busy" @click="generateCard('reading')">阅读理解 · 交互</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一道考研汉译英练习：先只给一句中文，等我翻译成英文后再给参考译文并批改')">汉译英练习</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英译汉练习：先只给一句英文，等我翻译成中文后再给参考译文并批改')">英译汉练习</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英语大作文题目（图画/图表，160-200 词），只给题目和提纲，不要范文；等我写完再批改')">大作文</button>
-        <button type="button" :disabled="busy" @click="quickAsk('出一道考研英语小作文题目（书信/通知，约 100 词），只给题目要求；等我写完再批改')">小作文</button>
+        <button type="button" :disabled="busy" @click="askTranslate('zh2en')">汉译英练习</button>
+        <button type="button" :disabled="busy" @click="askTranslate('en2zh')">英译汉练习</button>
+        <button type="button" :disabled="busy" @click="askWriting">写作练习</button>
       </div>
       <div class="chat-input">
         <input v-model="input" :disabled="busy" placeholder="中翻英 / 英翻中 / 查词 / 问语法…"

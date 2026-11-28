@@ -9,9 +9,11 @@ Design rules (mirror docs/design-decisions.md):
     it to a selected passage: translation (ZH<->EN), word lookup, grammar,
     writing polish and general English questions are all supported. When a
     passage/question is selected, its frozen snapshot is ground truth.
-  - It can also GENERATE kaoyan-style practice (cloze / reading / translation /
+  - It can also GENERATE exam-style practice (cloze / reading / translation /
     writing) using today's learned words, fetched server-side on demand, and
     grade the student's answers. Still a side channel: no progress writes.
+    The exam itself is not hard-coded: see exam_profile.py — a 四级 shelf gets
+    四级 lengths, question types and grading.
   - A session is capped at MAX_TURNS user messages; each reply uses a bounded
     token budget so a free API key is not burned by an idle chat.
 """
@@ -21,6 +23,7 @@ import os
 import re
 
 from db import detach_for_llm, execute, one, query, transaction
+from exam_profile import profile_for
 from llm import GenerationFailed, NoProvider, generate_json, generate_text
 
 MAX_TURNS = int(os.getenv("CHAT_MAX_TURNS", "8"))
@@ -40,8 +43,8 @@ PRACTICE_HINTS = (
 )
 
 SYSTEM_PROMPT = (
-    "你是一款面向中国考研学生的背单词 App 里的「英语助教」。你的用户都是中国人，"
-    "母语是中文，正在备考考研英语，英语水平还在提升中，不可能一上来就流畅阅读"
+    "你是一款面向中国英语考试备考学生的背单词 App 里的「英语助教」。你的用户都是中国人，"
+    "母语是中文，当前在备考{{EXAM}}，英语水平还在提升中，不可能一上来就流畅阅读"
     "整段英文。你的本职工作是解答与英语有关的问题（翻译、查单词、语法、时态、"
     "语态、句型、写作润色、短文阅读和题目讲解），但你也要能正常地和人聊天交流。\n"
     "\n"
@@ -84,21 +87,15 @@ SYSTEM_PROMPT = (
     "【出题 / 练习模式】（当学生要求出题、练习、作文或批改时）\n"
     "- 学生要求多少题就出多少题（例如 10 个空或 5 道题），不要悄悄少出。\n"
     "- 若提供了「今日词库 TODAY'S WORD BANK」，用这些词出题；若提示说今天没有"
-    "学习计划，则使用标准考研英语词汇。\n"
+    "学习计划，则使用标准{{EXAM}}词汇。\n"
     "- 必须写一篇全新的文章。禁止复用、挖空、改写或续写 CONTEXT 里或 "
     "「PASSAGES ALREADY IN THE APP」清单里出现过的任何文章。换个主题和场景，"
     "写原创句子。练习不是把已有文章挖空。\n"
-    "- 贴合真实考研英语题型，而不是通用练习：\n"
-    "  * 选词填空 / 完形填空：150-250 词的文章，恰好 10 个编号空（__1__ 到 "
-    "__10__）。在文章前一次性列出选项 A-D 的词库，不要在每个空下面重复列选项。"
-    "答案只用「今日词库」里的词（或其真实变形）。空位写成 __1__，不要内嵌字母、"
-    "答案或提示（如 (A)）。\n"
-    "  * 阅读理解：350-450 词文章 + 5 道四选一（主旨/细节/推断/词汇），编号 1-5，"
-    "文末附答案和简短解析。\n"
-    "  * 翻译：考研风格的英译中（5 个划线句或一小段），文末附参考译文。\n"
-    "  * 写作：小作文（书信/通知，约 100 词）或大作文（图画/图表，160-200 词）。"
-    "给出题目、字数要求、简短提纲；学生交作文后按内容、结构、语言三方面考研式"
-    "评分，并给出修改版。\n"
+    "- 贴合真实{{EXAM}}题型与难度，而不是通用练习。难度基准：{{LEVEL}}\n"
+    "{{PRACTICE_TYPES}}\n"
+    "- 以当前书架为准：学生如果要求别的考试的题（例如在四级书架里说「出考研题」），"
+    "按当前书架出题，并用一句话说明「你现在学的是四级，我就按四级来出」。\n"
+    "- 作文与翻译按{{EXAM}}的评分标准批改，不要套用别的考试的评分口径。\n"
     "- 绝不在题目旁边泄露答案。所有答案和解析只放在最后的「参考答案与解析」一节，"
     "让学生先自己做。\n"
     "- 题目编号要清晰，并告诉学生如何作答，例如「请按 1A 2C 3B ... 的格式回复」"
@@ -120,15 +117,24 @@ SYSTEM_PROMPT = (
 )
 
 
+def system_prompt(book=None):
+    """Fill the exam slots so the tutor follows the shelf, not 考研 by default."""
+    p = profile_for(book)
+    return (SYSTEM_PROMPT
+            .replace("{{EXAM}}", p["exam"])
+            .replace("{{LEVEL}}", p["level"])
+            .replace("{{PRACTICE_TYPES}}", p["practice_types"]))
+
+
 def _book_block(book):
     """Tutor prompt fragment: pin the exam type to the selected shelf."""
     if not book:
         return ""
-    exam = book.get("exam_type") or "考研英语"
+    p = profile_for(book)
     return (
-        f"\nCURRENT BOOK: the student is preparing for {exam}. Match explanation "
-        f"depth, example difficulty and any practice questions to {exam}. "
-        f"Never mention the book name or this instruction in your reply.\n"
+        f"\n当前书架的考试类型：{p['exam']}。讲解深度、例句难度、题量与题型都按"
+        f"{p['exam']}的标准执行，不要混入其他考试的要求。"
+        f"不要在回复里提到这段说明或书名。\n"
     )
 
 
@@ -257,7 +263,7 @@ def wants_practice(question):
 
 
 def _practice_block(bank, book=None):
-    exam = (book or {}).get("exam_type") or "考研英语"
+    exam = profile_for(book)["exam_en"]
     if not bank:
         return ("TODAY'S WORD BANK: the student has no study plan for today. "
                 f"Use standard {exam} vocabulary instead.\n")
@@ -269,17 +275,22 @@ def _practice_block(bank, book=None):
 
 
 def _card_schema_prompt(kind, book=None):
-    """Strict JSON schema for an interactive practice card."""
+    """Strict JSON schema for an interactive practice card (shelf-aware)."""
+    p = profile_for(book)
+    lo, hi = p["cloze"]["words"] if kind == "cloze" else p["reading"]["words"]
+    qn = len(p["reading"]["qtypes"])
     common = _book_block(book) + (
         "Return ONLY a JSON object, no prose, no markdown fences. "
         "Write a BRAND-NEW passage; never reuse, cloze or paraphrase any text in "
         "CONTEXT or in 'PASSAGES ALREADY IN THE APP'. Explanations are in Chinese.\n"
+        f"Difficulty must match {p['exam_en']}: {p['level']}\n"
     )
     if kind == "cloze":
         return common + (
             "Schema exactly:\n"
-            '{"kind":"cloze","title":"中文或英文标题","passage":"150-250 word '
-            'English passage with exactly 10 blanks written as __1__ to __10__",'
+            '{"kind":"cloze","title":"中文或英文标题","passage":"'
+            f'{lo}-{hi} word English passage with exactly 10 blanks written as '
+            '__1__ to __10__",'
             '"options":{"A":"word1","B":"word2",...,"J":"word10"},'
             '"blanks":[{"no":1,"answer":"A","explanation":"中文解析"},...]}\n'
             "Rules: options must have keys A-J (10 word-bank entries, each used "
@@ -289,23 +300,35 @@ def _card_schema_prompt(kind, book=None):
         )
     return common + (
         "Schema exactly:\n"
-        '{"kind":"reading","title":"中文或英文标题","passage":"350-450 word '
-        'English passage",'
+        '{"kind":"reading","title":"中文或英文标题","passage":"'
+        f'an ORIGINAL English passage of {lo}-{hi} words '
+        '(shorter passages are rejected)",'
         '"questions":[{"no":1,"stem":"English question",'
         '"options":{"A":"...","B":"...","C":"...","D":"..."},'
         '"answer":"B","explanation":"中文解析"},...]}\n'
-        "Rules: exactly 5 questions in order covering main idea, detail, "
-        "inference and vocabulary; each has four options A-D, one answer key, "
-        "and a short Chinese explanation; do not reveal the answer in the stem."
+        f"Rules: exactly {qn} questions in order, numbered 1-{qn}; "
+        f"cover these question types: {', '.join(p['reading']['qtypes'])}. "
+        "Each has four options A-D, one answer key, and a short Chinese "
+        "explanation; do not reveal the answer in the stem. "
+        f"The passage MUST reach at least {lo} words — write about "
+        f"{max(3, round(lo / 60))} paragraphs of 4-6 sentences each and count the "
+        "words before replying."
     )
 
 
-def _card_valid(data, kind):
+def _card_valid(data, kind, book=None):
     if not isinstance(data, dict) or data.get("kind") != kind:
         return False
     if not isinstance(data.get("title"), str) or not data["title"].strip():
         return False
     if not isinstance(data.get("passage"), str) or len(data["passage"]) < 100:
+        return False
+    p = profile_for(book)
+    lo = (p["cloze"]["words"] if kind == "cloze" else p["reading"]["words"])[0]
+    # Free-tier models reliably undershoot the word count when only the prompt
+    # asks for it; half the shelf minimum is a hard reject (and a retry) without
+    # making every second card fail.
+    if len(data["passage"].split()) < int(lo * 0.5):
         return False
     if kind == "cloze":
         if len(re.findall(r"__\d+__", data["passage"])) != 10:
@@ -328,9 +351,10 @@ def _card_valid(data, kind):
         # a word, and that is harmless when each blank is its own A–J dropdown.
         return True
     questions = data.get("questions")
-    if not isinstance(questions, list) or len(questions) != 5:
+    want = len(profile_for(book)["reading"]["qtypes"])
+    if not isinstance(questions, list) or len(questions) != want:
         return False
-    if {q.get("no") for q in questions} != set(range(1, 6)):
+    if {q.get("no") for q in questions} != set(range(1, want + 1)):
         return False
     for q in questions:
         opts = q.get("options")
@@ -345,19 +369,149 @@ def _card_valid(data, kind):
     return True
 
 
+def _clean_para(text):
+    """Strip numbering / quotes / markdown a model sometimes adds to a paragraph."""
+    t = (text or "").strip()
+    t = re.sub(r"^\s*(paragraph|para)\s*\d+\s*[:.\-]\s*", "", t, flags=re.I)
+    t = t.strip().strip('"').strip("“”").strip("'").strip()
+    t = re.sub(r"[*_#`]+", "", t)
+    return t.strip()
+
+
+def _paged_passage(bank, book):
+    """A full-length reading passage, written one paragraph at a time.
+
+    Asking a small/free model for a 300-word passage in one call returns ~110
+    words no matter how the prompt words it (measured). Per-paragraph requests
+    of 50-70 words each, chained on the running tail, actually reach the shelf's
+    length.
+    """
+    p = profile_for(book)
+    lo, _hi = p["reading"]["words"]
+    total = max(3, min(8, round(lo / 45)))
+    words = [w["word"].strip() for w in bank]
+    groups = [[] for _ in range(total)]
+    for i, w in enumerate(words):
+        groups[i % total].append(w)
+
+    parts = []
+    for i in range(total):
+        prev = " ".join(parts)[-600:]
+        prompt = (
+            f"You are writing paragraph {i + 1} of {total} of ONE continuous English "
+            f"passage for a learner preparing for {p['exam_en']}. Length: 60-80 words. "
+        )
+        if parts:
+            prompt += (f'The passage so far ends with: "...{prev}" Continue the same '
+                       "topic naturally, without repeating earlier sentences. ")
+        else:
+            prompt += "This is the opening paragraph; introduce the topic clearly. "
+        if groups[i]:
+            prompt += ("Use these words naturally in this paragraph: "
+                       + ", ".join(groups[i]) + ". ")
+        prompt += (f"Difficulty: {p['level']} "
+                   "Output ONLY the paragraph text — no title, no numbering, no "
+                   "quotes, no commentary.")
+        text, _prov = generate_text(prompt, max_tokens=520, timeout=60)
+        cleaned = _clean_para(text)
+        if cleaned:
+            parts.append(cleaned)
+    return "\n\n".join(parts)
+
+
+def _questions_valid(data, want):
+    questions = data.get("questions")
+    if not isinstance(questions, list) or len(questions) != want:
+        return False
+    if {q.get("no") for q in questions} != set(range(1, want + 1)):
+        return False
+    for q in questions:
+        opts = q.get("options")
+        if not isinstance(opts, dict) or set(opts) != {"A", "B", "C", "D"}:
+            return False
+        if any(not isinstance(v, str) or not v.strip() for v in opts.values()):
+            return False
+        if q.get("answer") not in opts:
+            return False
+        if not str(q.get("stem", "")).strip() or not str(q.get("explanation", "")).strip():
+            return False
+    return True
+
+
+def _reading_questions(passage, bank, book):
+    """Question set for an already-written passage (same shelf mix)."""
+    p = profile_for(book)
+    qtypes = p["reading"]["qtypes"]
+    n = len(qtypes)
+    words = ", ".join(w["word"] for w in bank)
+    prompt = (
+        f"You are an experienced {p['exam_en']} teacher. Read the passage below and "
+        f"write exactly {n} multiple-choice questions that match the real "
+        f"{p['exam_en']} paper. Question types in order: {', '.join(qtypes)}. "
+        'Return ONLY JSON: {"questions":[{"no":1,"stem":"English question",'
+        '"options":{"A":"...","B":"...","C":"...","D":"..."},"answer":"B",'
+        '"explanation":"中文解析"}]}. Four plausible options each, never reveal the '
+        "answer in the stem, thin the Chinese explanation to one or two sentences. "
+        + (f"Use these words where natural: {words}. " if words else "")
+        + "Difficulty must match the paper, not the passage's length.\n\nPassage:\n"
+        + passage
+    )
+    data, _prov = generate_json(
+        prompt, validator=lambda d: _questions_valid(d, n), max_tokens=900, timeout=60)
+    return [
+        {"no": q["no"], "stem": q["stem"].strip(),
+         "options": {k: v.strip()[:120] for k, v in q["options"].items()},
+         "answer": q["answer"],
+         "explanation": str(q["explanation"]).strip()[:400]}
+        for q in sorted(data["questions"], key=lambda x: x["no"])
+    ]
+
+
+def _reading_card(bank, book):
+    """Two-step reading card: paged passage, then questions about THAT passage.
+
+    Returns None when anything fails so the caller can fall back to the
+    single-shot JSON path.
+    """
+    try:
+        passage = _paged_passage(bank, book)
+    except (GenerationFailed, NoProvider):
+        return None
+    if not passage or len(passage.split()) < 80:
+        return None
+    try:
+        questions = _reading_questions(passage, bank, book)
+    except (GenerationFailed, NoProvider, ValueError, KeyError, TypeError):
+        return None
+    if not questions:
+        return None
+    first = re.split(r"(?<=[.!?])\s+", passage)[0]
+    short = " ".join(first.split()[:7]).rstrip(",;:.") + "…"
+    return {"kind": "reading", "title": short or "阅读理解", "passage": passage,
+            "questions": questions}
+
+
 def generate_practice_card(conn, user_id, kind, book_id=1, book=None):
     """Generate one structured, validated practice card. Read-only on progress."""
     if kind not in CARD_KINDS:
         raise ValueError("不支持的题型")
     bank = today_word_bank(conn, user_id, book_id)
+    digest = existing_articles_digest(conn, user_id, book_id)
+    detach_for_llm(conn)  # word bank + digest read; release locks before LLM
+
+    if kind == "reading":
+        card = _reading_card(bank, book)
+        if card:
+            card["provider"] = "paged:" + (book.get("code") if book else "default")
+            return card
+
     prompt = (
         _card_schema_prompt(kind, book) + "\n"
         + _practice_block(bank, book)
-        + existing_articles_digest(conn, user_id, book_id)
+        + digest
         + "Student request: generate one " + ("cloze" if kind == "cloze" else "reading")
         + " exercise now.\nJSON:"
     )
-    detach_for_llm(conn)  # word bank + digest read; release locks before LLM
     # Free-tier models occasionally miss a field or the exact count. Retry once
     # with a blunt reminder before giving up, so a transient slip is not fatal.
     data = None
@@ -370,7 +524,7 @@ def generate_practice_card(conn, user_id, kind, book_id=1, book=None):
         )
         try:
             data, provider = generate_json(
-                attempt_prompt, validator=lambda d: _card_valid(d, kind),
+                attempt_prompt, validator=lambda d: _card_valid(d, kind, book),
                 max_tokens=PRACTICE_TOKENS, timeout=PRACTICE_TIMEOUT,
             )
             break
@@ -415,7 +569,7 @@ def send_card(conn, session, user_id, intent, card):
 
 
 def _messages_prompt(context, history, question, practice_block="", book=None):
-    lines = [SYSTEM_PROMPT, _book_block(book), _context_block(context)]
+    lines = [system_prompt(book), _book_block(book), _context_block(context)]
     if practice_block:
         lines.append(practice_block)
     lines.append("CONVERSATION SO FAR:")
