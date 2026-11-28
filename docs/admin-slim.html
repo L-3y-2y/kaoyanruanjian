@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>精简版管理端 · 线框</title>
+<style>
+  :root{
+    --bg:#eef0f4; --card:#fff; --ink:#1a1f28; --ink2:#3a4250; --muted:#7c8595;
+    --line:#e5e8ee; --line2:#d6dae3;
+    --accent:#dc5a37; --accent-soft:#fdf0eb;
+    --ok:#13896a; --ok-soft:#e8f5f0; --warn:#b07500; --warn-soft:#fdf4e3;
+    --sb:#1b1e25;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;font-size:13px}
+  .wrap{max-width:1220px;margin:0 auto;padding:26px 20px 50px}
+  h1{margin:0 0 6px;font-size:20px}
+  .lead{margin:0;color:var(--muted);font-size:13px;line-height:1.7}
+  .tabs{display:flex;gap:6px;margin:18px 0 12px}
+  .tabs button{font:inherit;font-size:12.5px;padding:7px 14px;border-radius:7px;cursor:pointer;
+    border:1px solid var(--line2);background:#fff;color:var(--ink2)}
+  .tabs button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+
+  .frame{display:flex;min-height:560px;background:#f7f8fa;border:1px solid var(--line2);
+    border-radius:8px;overflow:hidden;box-shadow:0 24px 50px -40px rgba(15,20,30,.6)}
+  /* ---- sidebar ---- */
+  .sb{width:186px;flex:none;background:var(--sb);color:#a9b1bf;padding:14px 10px;display:flex;flex-direction:column}
+  .brand{display:flex;align-items:center;gap:8px;padding:2px 6px 14px;border-bottom:1px solid rgba(255,255,255,.07);margin-bottom:8px}
+  .brand i{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;font-style:normal;
+    font-size:12px;font-weight:800;color:#fff;background:#dc5a37}
+  .brand b{display:block;font-size:12.5px;color:#fff}
+  .brand span{font-size:10px;color:#6b7484}
+  .nav{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;font-size:12.3px;color:#a9b1bf;cursor:pointer}
+  .nav em{font-style:normal;width:14px;text-align:center;opacity:.6;font-size:11px}
+  .nav.on{background:rgba(220,90,55,.16);color:#f0a690;font-weight:600}
+  .nav .cnt{margin-left:auto;font-size:10px;background:#3a404c;color:#cfd5de;padding:0 5px;border-radius:9px}
+  .sb-foot{margin-top:auto;font-size:10.5px;color:#5f6878;line-height:1.7;padding:10px 6px 0;border-top:1px solid rgba(255,255,255,.07)}
+  .sb-foot b{color:#9aa4b4;font-weight:600}
+
+  /* ---- main ---- */
+  .main{flex:1;min-width:0;padding:16px 20px;overflow:hidden}
+  .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .head h2{margin:0;font-size:15px;letter-spacing:.2px}
+  .head .sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .acts{display:flex;gap:6px}
+  .btn{font:inherit;font-size:11.5px;padding:5px 10px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--line2);background:#fff;color:var(--ink2)}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+
+  /* status strip — 一行代替四张大卡 */
+  .strip{display:flex;align-items:center;gap:0;background:var(--card);border:1px solid var(--line);
+    border-radius:6px;padding:9px 4px;margin-bottom:12px}
+  .st{flex:1;padding:0 12px;border-right:1px solid var(--line);display:flex;align-items:baseline;gap:7px}
+  .st:last-child{border-right:0}
+  .st .k{font-size:11px;color:var(--muted)}
+  .st .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+  .st .v small{font-size:10.5px;font-weight:600;color:var(--muted);margin-left:2px}
+  .st .d{font-size:10.5px}
+  .up{color:var(--ok)} .dn{color:var(--accent)}
+
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:6px;margin-bottom:12px}
+  .ph{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid var(--line)}
+  .ph h3{margin:0;font-size:12.5px;font-weight:600}
+  .ph .n{font-size:11px;color:var(--muted)}
+
+  /* 需要处理 */
+  .todo{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #f1f3f6;font-size:12.3px}
+  .todo:last-child{border-bottom:0}
+  .tag{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;flex:none}
+  .tag.a{background:var(--accent-soft);color:var(--accent)}
+  .tag.b{background:var(--warn-soft);color:var(--warn)}
+  .tag.c{background:#eef1f7;color:var(--muted)}
+  .todo .t{font-weight:500}
+  .todo .s{color:var(--muted);font-size:11.5px}
+  .todo .go{margin-left:auto;font-size:11.5px;color:var(--accent);font-weight:600}
+  .todo.done .t{color:var(--muted);font-weight:400;text-decoration:line-through}
+
+  /* 紧凑表 */
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.3px;color:var(--muted);
+    padding:7px 10px;border-bottom:1px solid var(--line);background:#fbfcfd}
+  td{padding:8px 10px;border-bottom:1px solid #f2f4f7}
+  tr:last-child td{border-bottom:0}
+  tr:hover td{background:#fbfcfd}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .mono{font-variant-numeric:tabular-nums}
+  .pill{font-size:10px;padding:1px 7px;border-radius:9px;font-weight:600;white-space:nowrap}
+  .pill.ok{background:var(--ok-soft);color:var(--ok)}
+  .pill.w{background:var(--warn-soft);color:var(--warn)}
+  .pill.b{background:var(--accent-soft);color:var(--accent)}
+  .pill.m{background:#eef1f7;color:var(--muted)}
+
+  .bar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
+  .bar .lbl{font-size:11px;color:var(--muted)}
+  .input{font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--line2);border-radius:6px;background:#fff;width:200px}
+  .chips{display:flex;gap:4px;margin-left:8px}
+  .chip{font-size:11px;padding:3px 9px;border-radius:5px;border:1px solid var(--line2);background:#fff;color:var(--ink2);cursor:pointer}
+  .chip.on{background:var(--ink);border-color:var(--ink);color:#fff}
+  .chip b{font-weight:700}
+  .rowlink{color:var(--accent);font-weight:600;font-size:11.5px;cursor:pointer}
+
+  .empty{padding:26px 12px;text-align:center;color:var(--muted);font-size:12px}
+  .note{margin:12px 0 0;font-size:11.5px;color:var(--muted);line-height:1.75}
+  .hid{display:none}
+  .kbd{font-size:11px;padding:1px 5px;border:1px solid var(--line2);border-radius:3px;background:#fafbfc}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>精简版管理端 · 线框</h1>
+  <p class="lead">
+    只留三个页面、三件管理动作：看有没有问题、找谁有问题、改哪条内容。
+    没有大数字卡片、没有装饰图表、没有学员端那套圆角渐变；字号 12px、行高 32px，信息密度先上来。
+  </p>
+
+  <div class="tabs" id="tabs">
+    <button class="on" data-k="o">概览</button>
+    <button data-k="u">学员</button>
+    <button data-k="w">词库</button>
+  </div>
+
+  <div class="frame">
+    <aside class="sb">
+      <div class="brand"><i>研</i><div><b>考研英语</b><span>管理</span></div></div>
+      <div class="nav on" data-p="o"><em>▤</em>概览</div>
+      <div class="nav" data-p="u"><em>◔</em>学员<span class="cnt">6</span></div>
+      <div class="nav" data-p="w"><em>▣</em>词库</div>
+      <div class="sb-foot">
+        生成 <b>glm-4-flash</b> · 正常<br />
+        词库 <b>7395</b> 词 · 库 <b>kaoyanruanjian</b>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- ============ 概览 ============ -->
+      <section id="p-o">
+        <div class="head">
+          <div><h2>概览</h2><div class="sub">11-28 周六 · 10:32 更新</div></div>
+          <div class="acts"><button class="btn ghost">刷新</button><button class="btn">学员端 ↗</button></div>
+        </div>
+
+        <div class="strip">
+          <div class="st"><span class="k">今日活跃</span><span class="v">2<small>人</small></span><span class="d up">+1</span></div>
+          <div class="st"><span class="k">今日答题</span><span class="v">33<small>次</small></span></div>
+          <div class="st"><span class="k">复习积压</span><span class="v">16<small>词</small></span><span class="d dn">需催</span></div>
+          <div class="st"><span class="k">掉队</span><span class="v">1<small>人</small></span><span class="d dn">3 天未学</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><h3>需要处理</h3><span class="n">3 项</span></div>
+          <div class="todo">
+            <span class="tag a">卡住</span>
+            <div><div class="t">id3 从未开始学习</div><div class="s">注册 6 天，0 次答题、0 个批次</div></div>
+            <span class="go">去提醒 →</span>
+          </div>
+          <div class="todo">
+            <span class="tag b">积压</span>
+            <div><div class="t">16 个词今天到期未复习</div><div class="s">集中在考研英语 · 最早逾期 2 天</div></div>
+            <span class="go">看名单 →</span>
+          </div>
+          <div class="todo">
+            <span class="tag c">内容</span>
+            <div><div class="t">absorb 连续填错</div><div class="s">语境填空错 3 次 · 释义过长，可能是记混了形近词</div></div>
+            <span class="go">改词条 →</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><h3>高错误词</h3><span class="n">近 14 天 · 按错误次数</span></div>
+          <table>
+            <thead><tr><th>词</th><th>释义</th><th class="num">错</th><th class="num">作答</th><th>最近一次</th></tr></thead>
+            <tbody>
+              <tr><td><b>absorb</b></td><td>v. 吸收；使全神贯注</td><td class="num">3</td><td class="num">4</td><td class="mono">11-28 08:12</td></tr>
+              <tr><td><b>comprehensive</b></td><td>adj. 综合的；广泛的</td><td class="num">2</td><td class="num">9</td><td class="mono">11-27 21:40</td></tr>
+              <tr><td><b>insufficient</b></td><td>adj. 不足的；不够的</td><td class="num">1</td><td class="num">6</td><td class="mono">11-26 19:05</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">整页只在回答一个问题：<b>今天有没有事情需要我做</b>。没有就关掉，不用往下滚。</p>
+      </section>
+
+      <!-- ============ 学员 ============ -->
+      <section id="p-u" class="hid">
+        <div class="head">
+          <div><h2>学员</h2><div class="sub">6 名注册 · 按需要处理排序</div></div>
+          <div class="acts"><button class="btn">复制掉队名单</button><button class="btn">刷新</button></div>
+        </div>
+
+        <div class="panel">
+          <div class="bar">
+            <span class="lbl">筛选</span>
+            <div class="chips">
+              <span class="chip on">全部 <b>6</b></span>
+              <span class="chip">稳定 <b>3</b></span>
+              <span class="chip">波动 <b>1</b></span>
+              <span class="chip">掉队 <b>2</b></span>
+            </div>
+            <input class="input" style="margin-left:auto" placeholder="搜用户名 / 书籍" />
+          </div>
+          <table>
+            <thead><tr><th>学员</th><th>书籍</th><th class="num">今日</th><th class="num">已掌握</th><th class="num">积压</th><th class="num">错题</th><th>最近</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td><b>id3</b></td><td>考研英语</td><td class="num">—</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="mono">从未</td><td><span class="pill m">未开始</span></td></tr>
+              <tr><td><b>zzb1234567</b></td><td>考研英语</td><td class="num">—</td><td class="num">10</td><td class="num">0</td><td class="num">0</td><td class="mono">11-25 11:34</td><td><span class="pill w">波动</span></td></tr>
+              <tr><td><b>id2</b></td><td>考研英语</td><td class="num">25</td><td class="num">1</td><td class="num">16</td><td class="num">1</td><td class="mono">今天 18:24</td><td><span class="pill ok">稳定</span></td></tr>
+              <tr><td><b>chen_ky</b></td><td>考研英语</td><td class="num">30</td><td class="num">175</td><td class="num">9</td><td class="num">3</td><td class="mono">今天 06:58</td><td><span class="pill ok">稳定</span></td></tr>
+              <tr><td><b>ada_cet4</b></td><td>四级词汇</td><td class="num">—</td><td class="num">86</td><td class="num">44</td><td class="num">19</td><td class="mono">11-24 20:10</td><td><span class="pill b">掉队</span></td></tr>
+              <tr><td><b>liu_cet6</b></td><td>六级词汇</td><td class="num">18</td><td class="num">402</td><td class="num">6</td><td class="num">1</td><td class="mono">今天 10:20</td><td><span class="pill ok">稳定</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          状态不再用四张大卡，而是表头上一行 chips —— 同一份信息只出现一次。
+          排序固定「越需要处理越靠前」，点列头才改成按数字排。
+        </p>
+      </section>
+
+      <!-- ============ 词库 ============ -->
+      <section id="p-w" class="hid">
+        <div class="head">
+          <div><h2>词库</h2><div class="sub">7395 词 · 来源 ECDICT-ky / exam / built-in</div></div>
+          <div class="acts"><button class="btn">导入 CSV</button><button class="btn">导出</button></div>
+        </div>
+
+        <div class="panel">
+          <div class="bar">
+            <input class="input" style="width:280px" placeholder="拼写或中文释义，回车搜索" />
+            <span class="lbl" style="margin-left:auto">按最近修改排序</span>
+          </div>
+          <table>
+            <thead><tr><th>词</th><th>音标</th><th>释义</th><th>词性</th><th>来源</th><th style="width:70px"></th></tr></thead>
+            <tbody>
+              <tr><td><b>solidify</b></td><td class="mono">səˈlɪdɪfaɪ</td><td>v. (使)凝固；(使)团结，巩固</td><td>v.</td><td><span class="pill m">ECDICT</span></td><td><span class="rowlink">编辑</span></td></tr>
+              <tr><td><b>solely</b></td><td class="mono">ˈsəʊlli</td><td>adv. 仅仅，单独地</td><td>adv.</td><td><span class="pill m">ECDICT</span></td><td><span class="rowlink">编辑</span></td></tr>
+              <tr><td><b>soldier</b></td><td class="mono">ˈsəʊldʒə</td><td>n. 军人，士兵；vi. 从军，尽职</td><td>n.</td><td><span class="pill m">ECDICT</span></td><td><span class="rowlink">编辑</span></td></tr>
+              <tr><td><b>absorb</b></td><td class="mono">əbˈsɔːb</td><td>v. 吸收；使全神贯注</td><td>v.</td><td><span class="pill b">已改</span></td><td><span class="rowlink">编辑</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          「新增词条」表单默认收起 —— 管理端最常用的动作是<b>改一条错的</b>，不是从零加一条。
+          搜到就直接在行里改，保存后回到原位，不跳页、不刷新整表。
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <p class="note" style="margin-top:16px">
+    三页之外的都收进侧栏底部那两行：生成模型、词库规模、库名。<b>它们不是功能，是状态。</b>
+    真要看模型细节时，点那行展开即可。
+  </p>
+</div>
+
+<script>
+  const tabs = document.getElementById('tabs')
+  const navs = [...document.querySelectorAll('.nav')]
+  function show(k) {
+    tabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.k === k))
+    navs.forEach(n => n.classList.toggle('on', n.dataset.p === k))
+    ;['o','u','w'].forEach(x => document.getElementById('p-' + x).classList.toggle('hid', x !== k))
+  }
+  tabs.addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.k) })
+  navs.forEach(n => n.addEventListener('click', () => show(n.dataset.p)))
+</script>
+</body>
+</html>
