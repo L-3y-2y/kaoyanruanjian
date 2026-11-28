@@ -1015,6 +1015,13 @@ button.kw.other:hover { background: var(--surface); color: var(--ink-soft); }
 .adm-login-card .err { color: #c2410c; font-size: 11.5px; margin: 0 0 10px; line-height: 1.6; }
 .adm-login-card .tip { font-size: 10.5px; color: #6b7280; margin: 12px 0 0; line-height: 1.7; }
 .adm-login-card .tip code { background: #f2f3f6; padding: 1px 4px; border-radius: 3px; }
+.adm-link-btn {
+  display: block; width: 100%; margin-top: 10px; padding: 6px;
+  border: 0; background: transparent; border-radius: 6px;
+  color: #6b7280; font: inherit; font-size: 11px; font-weight: 500;
+  cursor: pointer; min-height: 0;
+}
+.adm-link-btn:hover:not(:disabled) { color: #d9552f; border-color: transparent; }
 
 /* ---- 管理端里的词库页：复用学员端组件，但按后台密度收敛 ---- */
 .adm-narrow { max-width: 900px; }
@@ -1027,3 +1034,63 @@ button.kw.other:hover { background: var(--surface); color: var(--ink-soft); }
 .adm-narrow .plan-row { margin-top: 12px; }
 .adm-narrow .plan-row input { width: auto; flex: 1; margin: 0; }
 .adm-narrow .admin-form { grid-template-columns: 1fr 1fr; }
+
+/* ---- 管理端右上角：身份 / 切换弹层 ---- */
+
+.adm-account { position: relative; }
+
+.adm-account-btn {
+  display: flex; align-items: center; gap: 8px; min-height: 0;
+  padding: 3px 9px 3px 3px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line-strong); background: var(--card); color: var(--ink-soft);
+  font: inherit; text-align: left;
+}
+.adm-account-btn:hover, .adm-account-btn.on { border-color: var(--primary); }
+.adm-account-btn .adm-ava { width: 28px; height: 28px; font-size: 11.5px; }
+.adm-account-tx { display: block; min-width: 0; }
+.adm-account-tx b {
+  display: block; font-size: 12px; font-weight: 700; color: var(--ink); line-height: 1.25;
+  max-width: 104px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.adm-account-tx em { display: block; font-style: normal; font-size: 10.5px; color: var(--muted); line-height: 1.35; }
+.adm-caret { font-style: normal; font-size: 10px; color: var(--muted); transition: transform .16s ease; }
+.adm-account-btn.on .adm-caret { transform: rotate(180deg); }
+
+.adm-pop {
+  position: absolute; right: 0; top: calc(100% + 8px); width: 264px; padding: 8px;
+  background: var(--card); border: 1px solid var(--line-strong); border-radius: 14px;
+  box-shadow: 0 24px 50px -24px rgba(16, 20, 28, .45); z-index: 60;
+}
+.adm-pop-h { display: flex; align-items: center; gap: 10px; padding: 6px 8px 10px; }
+.adm-pop-h .adm-ava { width: 36px; height: 36px; font-size: 14px; }
+.adm-pop-h b { display: block; font-size: 13px; color: var(--ink); line-height: 1.35; }
+.adm-pop-h span { display: block; font-size: 11px; color: var(--muted); line-height: 1.4; }
+.adm-pop-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+
+.adm-pop-row {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; min-height: 0;
+  padding: 9px 8px; border: 0; border-radius: 10px; background: transparent;
+  cursor: pointer; font: inherit; color: var(--ink-soft); text-align: left;
+}
+.adm-pop-row:hover:not(:disabled) { background: var(--surface); border-color: transparent; }
+.adm-pop-row:disabled { opacity: .5; cursor: not-allowed; }
+.adm-pop-row > i {
+  flex: none; width: 18px; margin-top: 1px; text-align: center;
+  font-style: normal; font-size: 13px; color: var(--muted);
+}
+.adm-pop-row > span { display: block; min-width: 0; }
+.adm-pop-row b { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); line-height: 1.4; }
+.adm-pop-row em { display: block; font-style: normal; font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 1px; }
+.adm-pop-foot {
+  margin: 6px 2px 2px; padding: 9px 10px; border-radius: 9px;
+  background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1.65;
+}
+
+.adm-pop-enter-active, .adm-pop-leave-active { transition: opacity .14s ease, transform .14s ease; }
+.adm-pop-enter-from, .adm-pop-leave-to { opacity: 0; transform: translateY(-4px) scale(.98); }
+
+@media (max-width: 430px) {
+  .adm-account-tx b { max-width: 62px; }
+  .adm-account-btn { padding-right: 8px; }
+  .adm-pop { width: min(264px, calc(100vw - 28px)); }
+}

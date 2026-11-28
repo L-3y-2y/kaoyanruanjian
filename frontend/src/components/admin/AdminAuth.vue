@@ -31,6 +31,11 @@ async function submit() {
 }
 
 onMounted(() => { store.error = '' })
+
+// 走错门的学员：这个页面没有登录态，直接去学员端（那边会弹登录框）。
+function toLearner() {
+  window.location.href = '/'
+}
 </script>
 
 <template>
@@ -57,6 +62,10 @@ onMounted(() => { store.error = '' })
         这里只接受管理员账号。没有账号时，在服务器上运行
         <code>scripts/create_admin.py</code> 创建，密码由你自己设定。
       </p>
+
+      <button class="adm-link-btn" type="button" @click="toLearner">
+        ← 我是学员，去学员端登录
+      </button>
     </form>
   </div>
 </template>

@@ -4,6 +4,7 @@ import { store, logout } from '../store.js'
 import OverviewPanel from './admin/OverviewPanel.vue'
 import LearnersPanel from './admin/LearnersPanel.vue'
 import ModelPanelAdmin from './admin/ModelPanelAdmin.vue'
+import AdminAccountMenu from './admin/AdminAccountMenu.vue'
 import WordBank from './WordBank.vue'
 
 const NAV = [
@@ -83,8 +84,7 @@ async function signOut() {
           <div class="adm-crumb">{{ allowed ? crumb : '这个页面只对管理员开放' }}</div>
         </div>
         <div class="adm-head-r">
-          <button class="adm-btn" @click="signOut">退出</button>
-          <div class="adm-ava">{{ store.me?.is_admin ? '管' : (store.me?.username || '我').slice(0, 1).toUpperCase() }}</div>
+          <AdminAccountMenu v-if="store.me" />
         </div>
       </header>
 
