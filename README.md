@@ -25,13 +25,16 @@
 ```
 D:\kaoyanruanjian\
 ├─ backend\                 FastAPI 后端
-│   ├─ main.py              全部接口 + 五轮状态机 + 后台定时发布
-│   ├─ auth.py              密码哈希 / Session-Cookie / 身份依赖
+│   ├─ main.py              装配层：lifespan / CORS / 静态托管（路由已拆到 routers\）
+│   ├─ routers\             按业务域拆分的路由：core / study / articles / reading / admin / tutor
+│   ├─ study_state.py       五轮状态机与艾宾浩斯复习间隔（取词 SQL / 判定 / 跃迁）
+│   ├─ scheduler.py         周五晚自动发布周阅读的后台线程
+│   ├─ auth.py              密码哈希 / Session-Cookie / 身份依赖 / 影子学员行
 │   ├─ content.py           短文与阅读生成、词形标注、判分（按书籍注入难度）
 │   ├─ chat.py              AI 英语答疑（按书籍调教，旁路表）
 │   ├─ scenario.py          语境填空的现写例句（按考试难度、永不重复，旁路）
 │   ├─ llm.py               可配置生成层：JSON 提取 / 重试 / 模型切换 / 连通性测试
-│   ├─ db.py                连接 / 事务 / 幂等建表与增量迁移
+│   ├─ db.py                连接池 / 事务 / 幂等建表与增量迁移
 │   ├─ schema.sql           表结构（含 book / word_example；旧 word_scene 已不再使用）
 │   ├─ seed.py              词库导入（支持多考试标签）
 │   ├─ .env                 凭据（gitignore，已配好）

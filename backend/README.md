@@ -25,12 +25,15 @@ cd D:\kaoyanruanjian\backend
 
 | 文件 | 职责 |
 | --- | --- |
-| `main.py` | 全部路由 + 五轮状态机 + 后台定时发布 + 静态托管 |
+| `main.py` | 装配层：lifespan / CORS / 参数校验异常 / 静态托管（业务路由已拆出） |
+| `routers/` | 按业务域拆分的路由：`core`（健康检查/模型/书架/状态机）、`study`、`articles`、`reading`、`admin`、`tutor` |
+| `study_state.py` | 五轮状态机与艾宾浩斯复习间隔（取词 SQL、判定、跃迁） |
+| `scheduler.py` | 周五晚自动发布周阅读的后台线程（`start()` / `stop()`） |
 | `auth.py` | pbkdf2 密码哈希、Session-Cookie、`current_user` / `require_admin` 依赖、首个注册继承旧进度 |
 | `content.py` | 每日短文 / 周阅读生成、词形还原与释义快照、题目生成、判分 |
 | `llm.py` | `generate_text(prompt)` 唯一生成入口：主源 + 兜底 + 本地确定性回退 |
-| `db.py` | 连接 / 事务 / 幂等建表与增量迁移 |
-| `schema.sql` | 10 张表定义 |
+| `db.py` | 连接池 / 事务 / 幂等建表与增量迁移 |
+| `schema.sql` | 16 张表定义 |
 | `seed.py` | 内置词库与 ECDICT 导入 |
 
 ## 配置（`backend/.env`，gitignore）

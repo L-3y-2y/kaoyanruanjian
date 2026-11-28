@@ -330,26 +330,33 @@ def main():
         health = cli.call("/api/health")
         if health.get("llm_configured") and health.get("llm_model"):
             original = health["llm_model"]
-            info = cli.call("/api/llm/models")
+            # Switching/probing the model is admin-only. `cli` carries the
+            # throw-away learner cookie, so it is correctly rejected; use a
+            # fresh loopback client, which resolves to the local admin.
+            admin_cli = Client()
+            info = admin_cli.call("/api/llm/models")
             assert info["models"] and any(m["current"] for m in info["models"]), \
                 "model list must mark the active model"
             assert all("key" not in m and "base_url" not in m for m in info["models"]), \
                 "model list must never leak keys or endpoints"
             other = next((m["id"] for m in info["models"]
                           if m["id"] != original and not m["note"].startswith("Agnes")), None)
-            if other:
-                switched = cli.call("/api/llm/model", "POST",
-                                    body={"model": other})
-                assert switched["model"] == other
-                assert cli.call("/api/health")["llm_model"] == other
-                print(f"[12a] model switch OK: {original} -> {other}")
-            probe = cli.call("/api/llm/test", "POST")
-            assert "ok" in probe and "model" in probe, "test endpoint must return a verdict"
-            print(f"[12a] model probe returned ok={probe['ok']} "
-                  f"(busy providers are reported, not hidden)")
-            # Restore in all cases.
-            cli.call("/api/llm/model", "POST", body={"model": original})
-            assert cli.call("/api/health")["llm_model"] == original
+            try:
+                if other:
+                    switched = admin_cli.call("/api/llm/model", "POST",
+                                              body={"model": other})
+                    assert switched["model"] == other
+                    assert admin_cli.call("/api/health")["llm_model"] == other
+                    print(f"[12a] model switch OK: {original} -> {other}")
+                probe = admin_cli.call("/api/llm/test", "POST")
+                assert "ok" in probe and "model" in probe, \
+                    "test endpoint must return a verdict"
+                print(f"[12a] model probe returned ok={probe['ok']} "
+                      f"(busy providers are reported, not hidden)")
+            finally:
+                # Restore in all cases, including an assertion failure above.
+                admin_cli.call("/api/llm/model", "POST", body={"model": original})
+                assert admin_cli.call("/api/health")["llm_model"] == original
         else:
             print("[12a] model switching skipped (no LLM key configured)")
 

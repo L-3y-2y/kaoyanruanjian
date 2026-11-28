@@ -52,7 +52,7 @@ ORDER BY cycle_no ASC, round ASC, id ASC
 ```
 
 即：第 1 组的 5 个词先走完 R1 → 同组 R2 → 同组 R3，再进入第 2 组。这样一次只记 5 个词，符合「小周期」的初衷，也让「R3 后回到 R1 开始下一组」这句话成立。
-若以后想改成「当天 N 个词先全部 R1、再全部 R2」，只需把 `backend/main.py` 里这一处 `ORDER BY` 换成 `round ASC, cycle_no ASC`，**不用改表、不用改前端**。
+若以后想改成「当天 N 个词先全部 R1、再全部 R2」，只需把 `backend/study_state.py` 里 `NEXT_ITEM_SQL` 这一处 `ORDER BY` 换成 `round ASC, cycle_no ASC`，**不用改表、不用改前端**。
 
 ## 5. 判分归一化
 
@@ -361,8 +361,50 @@ R4 的汉语释义**不机器判分**：需求定的是「写完显示标准答�
 
 ### 31.7 明确不装的工程债
 
-写进 `docs/项目架构说明.md` §15，不再含糊：`main.py` 1668 行单文件聚合（含拆分顺序建议）、启动时 `ensure_indexes` 会 ALTER、进程内限速、无 CI / Docker / 可观测性 / LLM 全局额度、复习无每日上限（词级 `LIMIT 1` + `cloze_wrong` 优先）、同词跨书独立进度、覆盖率只保证"出现"不保证"用得自然"、题卡判分在浏览器（不防作弊）。
+写进 `docs/项目架构说明.md` §15，不再含糊：`content.py` 1139 行仍是单文件（`main.py` 已按域拆到 `routers/`，见 §32）、启动时 `ensure_indexes` 会 ALTER、进程内限速、无 CI / Docker / LLM 全局额度、复习无每日上限（词级 `LIMIT 1` + `cloze_wrong` 优先）、同词跨书独立进度、覆盖率只保证"出现"不保证"用得自然"、题卡判分在浏览器（不防作弊）。
 
 ### 31.8 过期数字按 `wc -l` 重写
 
-代码规模原写"后端 2700 / 前端 800 / 自检 530 ≈ 4800"，实测 **后端 5194 / 前端 4018 / scripts 768 ≈ 1 万**；`main.py 884 → 1668`、`content.py 865 → 1139`、`chat.py 206 → 878`。同时把 `file:line` 一律改成符号名（`file:line` 三天就过期，评审第一眼就会判定"文档是假的"）。
+代码规模原写"后端 2700 / 前端 800 / 自检 530 ≈ 4800"，实测 **后端 5636 / 前端 4018 / scripts 768 ≈ 1 万**；`main.py 1668 → 93`（拆到 `routers/` 与 `study_state.py`）、`content.py 865 → 1139`、`chat.py 206 → 878`。同时把 `file:line` 一律改成符号名（`file:line` 三天就过期，评审第一眼就会判定"文档是假的"）。
+
+## 32. 连接池 + 按域拆路由：先治卡，再治乱（2026-11-28）
+
+### 32.1 用户的直觉是对的一半
+
+用户问："main.py 不用拆开吗，回来不会越做越卡了吗？"——**拆文件不会让它变快**，但项目确实有会越用越卡的地方，只是不在行数上。先量化再动手：
+
+| 度量 | 实测 |
+| --- | --- |
+| `import main` | 659–979 ms（几乎全部来自 fastapi/pymysql 依赖链，与 1668 行无关） |
+| 单次 `connect()` | 18–49 ms（TCP + MySQL 认证） |
+| `/api/health` | 平均 60.6 ms |
+| `/api/state` | 平均 67.2 ms |
+
+结论：卡在**每个请求新建一次数据库连接**，而且鉴权依赖 `resolve_user` 自己又建一次，最简单的只读接口也要付两次握手。
+
+### 32.2 治法：固定大小连接池
+
+`db.py` 增加 `ConnectionPool`（默认 16，`DB_POOL_SIZE` 可调），`transaction()` 与新增的 `reader()` 都从池里借：
+
+- **不能重复借出**：先拿 `BoundedSemaphore` 名额、再取空闲连接，最多 `size` 个并发借出；
+- **空闲连接可能已死**：`ping(reconnect=True)` 让 MySQL `wait_timeout` 掐掉的连接自动重建（`reconnected` 计数可见）；
+- **不能带脏状态回池**：归还前 `rollback()`；rollback 抛错说明连接状态不可信，直接 `close()` 丢弃；
+- **池满要报错不要雪崩**：等 15 秒（`DB_POOL_WAIT`）后抛"数据库连接池已满"，而不是继续开连接把 MySQL `max_connections` 打穿；
+- **LLM 长调用仍占连接**：`chat/practice` 这类接口在事务里调模型 18–30 秒，池 16 意味着同时最多 16 个这类请求。这是已知约束（§15.6），彻底解决要把生成移出事务（读→commit→LLM→写），本轮没做。
+
+`/api/health` 顺手瘦身：`COUNT(*) word` 与 `information_schema.tables` 统计加 30 秒缓存（前端顶栏在轮询），并暴露 `pool` 计数。
+
+改后实测：`/api/health` 4.8 ms、`/api/books` 21.0 ms、`/api/pool` 14.5 ms、`/api/state` 13.6 ms、`/api/review/stats` 8.0 ms、`/api/study/today` 6.1 ms；20 并发 200 请求全部 200，p95 97 ms，`pool.opened=1 / reused=135`（一个连接被反复复用，没有连接数增长）。
+
+### 32.3 拆分：只搬代码，路径一条不改
+
+`main.py` 1668 → 93 行，按域拆成：
+
+- `study_state.py`：五轮状态机（取词 SQL、判定、跃迁、复习间隔），router 只调它；
+- `scheduler.py`：周阅读发布线程，`start()/stop()` 交给 lifespan；
+- `routers/core.py`、`study.py`、`articles.py`、`reading.py`、`admin.py`、`tutor.py`：各自 `APIRouter()`，路径前缀不变；
+- `main.py` 只剩 lifespan、CORS、参数校验异常、`/admin` 与静态托管。
+
+**验收方式**：拆分前后逐条比对 OpenAPI 路径集合（旧 38 条 + auth 5 条 = 43 条），结果完全一致；再对 19 个只读接口做 200 冒烟 + `POST /api/study/heartbeat` 写路径 + 15 个单测。
+
+**踩到的坑**：`main.py` 里已有一个 `/api/pool` 路由函数叫 `pool`，`from db import pool` 被它覆盖，`/api/health` 报 `'function' object has no attribute 'stats'`——改成 `from db import pool as db_pool`。拆到 `routers/core.py` 后同名函数与导入不再冲突，但别名保留，避免下次再加路由时重犯。
