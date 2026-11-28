@@ -121,8 +121,10 @@ def resolve_user(request: Request):
             )
             admin = one(
                 conn,
-                """SELECT s.user_id, a.username FROM `user_session` s
+                """SELECT a.id, a.username, a.user_id AS student_id, u.current_book_id
+                   FROM `user_session` s
                    JOIN `admin` a ON a.id=s.user_id
+                   LEFT JOIN `user` u ON u.id=a.user_id
                    WHERE s.token=%s AND s.expires_at > NOW() AND s.is_admin=1""",
                 (token,),
             )
@@ -133,8 +135,11 @@ def resolve_user(request: Request):
                     "is_admin": 0, "local": False,
                     "book_id": int(row["current_book_id"] or 1)}
         if admin:
-            return {"id": admin["user_id"], "username": admin["username"],
-                    "is_admin": 1, "local": False, "book_id": 1}
+            # Study data hangs off the admin's private shadow row, never off the
+            # admin id itself (the two id spaces overlap).
+            return {"id": int(admin["student_id"] or 0), "username": admin["username"],
+                    "is_admin": 1, "local": False,
+                    "book_id": int(admin["current_book_id"] or 1)}
     if LOCAL_MODE and _local_allowed(request):
         # The local placeholder is a real `user` row, so honour its book too.
         conn = connect()
@@ -171,6 +176,36 @@ def _issue_session(conn, identity_id: int, is_admin: int) -> str:
         (token, identity_id, is_admin, expires),
     )
     return token
+
+
+def _ensure_admin_student(conn, admin_row) -> int:
+    """Return the `user` row that stores this admin's own study data.
+
+    admin.id and user.id are separate AUTO_INCREMENT spaces, so the admin id
+    must never be used as a learner id — that would read/write whichever
+    learner happens to own the same number. A shadow row (empty password so it
+    cannot log in, shadow=1 so dashboards skip it) keeps the admin's own
+    progress isolated.
+    """
+    uid = admin_row.get("user_id")
+    if uid:
+        row = one(conn, "SELECT id FROM `user` WHERE id=%s AND shadow=1", (uid,))
+        if row:
+            return int(uid)
+    uname = f"#admin:{admin_row['username']}"
+    row = one(conn, "SELECT id FROM `user` WHERE username=%s", (uname,))
+    if row:
+        uid = int(row["id"])
+        execute(conn, "UPDATE `user` SET shadow=1 WHERE id=%s", (uid,))
+    else:
+        execute(
+            conn,
+            "INSERT INTO `user` (`username`,`password_hash`,`shadow`) VALUES (%s,'',1)",
+            (uname,),
+        )
+        uid = int(one(conn, "SELECT LAST_INSERT_ID() AS id")["id"])
+    execute(conn, "UPDATE `admin` SET user_id=%s WHERE id=%s", (uid, admin_row["id"]))
+    return uid
 
 
 def _set_cookie(response: Response, token: str):
@@ -292,10 +327,11 @@ def admin_login(req: Credentials, response: Response, request: Request):
         if not row or not verify_password(req.password, row["password_hash"]):
             _record_failure(key, fails, first)
             raise HTTPException(status_code=401, detail="管理员账号或密码不正确")
+        student_id = _ensure_admin_student(conn, row)
         token = _issue_session(conn, row["id"], 1)
     _clear_throttle(key)
     _set_cookie(response, token)
-    return {"ok": True, "user": {"id": row["id"], "username": row["username"],
+    return {"ok": True, "user": {"id": student_id, "username": row["username"],
                                   "is_admin": True, "local": False}}
 
 

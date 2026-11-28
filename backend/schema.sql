@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS `user` (
   `username`        VARCHAR(64)  NOT NULL,
   `password_hash`   VARCHAR(255) NOT NULL DEFAULT '',
   `current_book_id` INT          NOT NULL DEFAULT 1,
+  `shadow`          TINYINT      NOT NULL DEFAULT 0,
   `created_at`      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_username` (`username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS `admin` (
   `id`            INT AUTO_INCREMENT PRIMARY KEY,
   `username`      VARCHAR(64)  NOT NULL,
   `password_hash` VARCHAR(255) NOT NULL,
+  `user_id`       INT          NULL,
   `created_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_admin_username` (`username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

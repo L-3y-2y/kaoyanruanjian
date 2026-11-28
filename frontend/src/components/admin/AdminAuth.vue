@@ -32,9 +32,9 @@ async function submit() {
 
 onMounted(() => { store.error = '' })
 
-// 走错门的学员：这个页面没有登录态，直接去学员端（那边会弹登录框）。
+// 走错门的学员：直接去学员端的登录框（带「管理员」页签，随时可以回来）。
 function toLearner() {
-  window.location.href = '/'
+  window.location.href = '/?auth=1'
 }
 </script>
 

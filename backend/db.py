@@ -146,6 +146,12 @@ def ensure_columns(cur):
         # pass or a failure. Drives the three-step Ebbinghaus review.
         ("progress", "review_round", "TINYINT NOT NULL DEFAULT 0"),
         ("progress", "cloze_wrong", "TINYINT NOT NULL DEFAULT 0"),
+        # Admin accounts live in their own AUTO_INCREMENT space, so an admin id
+        # can collide with a learner id. `admin.user_id` points at a private
+        # placeholder row in `user` that only holds that admin's study data;
+        # `user.shadow` marks those rows so dashboards ignore them.
+        ("user", "shadow", "TINYINT NOT NULL DEFAULT 0"),
+        ("admin", "user_id", "INT NULL"),
     ]
     for table, column, ddl in additions:
         meta = _column_meta(cur, table, column)
@@ -193,6 +199,25 @@ def ensure_columns(cur):
         meta = _column_meta(cur, table, column)
         if meta and meta["c"] > 0 and meta["nullable"] == "NO":
             cur.execute(f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` {ddl}")
+
+    # Backfill: every admin needs its own `user` row so learner endpoints never
+    # resolve an admin id to a stranger's progress. Shadow rows have an empty
+    # password (cannot log in) and shadow=1 (hidden from the admin dashboards).
+    cur.execute("SELECT id, username FROM `admin` WHERE user_id IS NULL")
+    for a in cur.fetchall() or []:
+        uname = f"#admin:{a['username']}"
+        cur.execute("SELECT id FROM `user` WHERE username=%s", (uname,))
+        row = cur.fetchone()
+        if row:
+            uid = int(row["id"])
+            cur.execute("UPDATE `user` SET shadow=1 WHERE id=%s", (uid,))
+        else:
+            cur.execute(
+                "INSERT INTO `user` (`username`,`password_hash`,`shadow`) VALUES (%s,'',1)",
+                (uname,),
+            )
+            uid = int(cur.lastrowid)
+        cur.execute("UPDATE `admin` SET user_id=%s WHERE id=%s", (uid, a["id"]))
 
 
 def _index_exists(cur, table, index):

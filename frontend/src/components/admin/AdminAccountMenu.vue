@@ -20,20 +20,21 @@ const initial = computed(() => (store.me?.is_admin ? '管' : isLocal.value ? '�
 function toggle() { open.value = !open.value }
 function close() { open.value = false }
 
-// 去学员端。管理员必须先退出：管理员在 admin 表、学员在 user 表，两边 id 会撞号，
-// 留在登录态直接进学员端会读到同 id 学员的数据，所以这里强制走「退出 + 学员端登录」。
-async function toLearner() {
-  if (busy.value) return
-  busy.value = true
-  if (!isLocal.value) await logout()
+// 去学员端。管理员保留登录态：后端给他的学习数据挂了独立的影子学员行，
+// 不会串到同 id 的学员。App.vue 靠 ky-view-as 放行一次。
+function toLearner() {
+  close()
+  try { sessionStorage.setItem('ky-view-as', 'user') } catch {}
   window.location.href = '/'
 }
 
+// 退出登录回到学员端登录框（带「管理员」页签），而不是管理端那套独立登录页。
 async function signOut() {
   if (busy.value) return
   busy.value = true
   await logout()
-  window.location.href = '/admin'
+  try { sessionStorage.removeItem('ky-view-as') } catch {}
+  window.location.href = '/?auth=1'
 }
 
 function onDocClick(e) {
@@ -74,11 +75,11 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <button class="adm-pop-row" type="button" role="menuitem" :disabled="busy" @click="toLearner">
+        <button class="adm-pop-row" type="button" role="menuitem" @click="toLearner">
           <i>◧</i>
           <span>
             <b>前往学员端</b>
-            <em>{{ isLocal ? '回到背单词页面' : '退出管理员，用学员账号登录背单词' }}</em>
+            <em>{{ isLocal ? '回到背单词页面' : '用当前管理员账号进入背单词页面' }}</em>
           </span>
         </button>
 
@@ -86,7 +87,7 @@ onBeforeUnmount(() => {
           <div class="adm-pop-sep"></div>
           <button class="adm-pop-row" type="button" role="menuitem" :disabled="busy" @click="signOut">
             <i>⏻</i>
-            <span><b>退出登录</b><em>退出后回到管理端登录页</em></span>
+            <span><b>退出登录</b><em>退出后回到学员端登录框</em></span>
           </button>
         </template>
 

@@ -154,6 +154,7 @@ export async function onAuthDone() {
 
   // 管理员账号没有学员身份，登录后直接进管理端，不要先掉进背单词页面。
   if (store.me?.is_admin) {
+    try { sessionStorage.removeItem('ky-view-as') } catch {}
     window.location.replace('/admin')
     return
   }

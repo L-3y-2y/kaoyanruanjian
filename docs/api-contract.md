@@ -200,10 +200,10 @@
 
 | 接口 | 入参 | 返回 / 行为 |
 | --- | --- | --- |
-| `GET /api/me` | — | `{user:{id,username,is_admin,local}, local_mode}`。本地模式返回 `local` 占位账号 |
+| `GET /api/me` | — | `{user:{id,username,is_admin,local}, local_mode}`。本地模式返回 `local` 占位账号；管理员返回 `is_admin:true`，`id` 是其**影子学员行**的 id（不是 `admin.id`），学员接口靠它隔离数据 |
 | `POST /api/auth/register` | `{username,password}` | 建号、写 pbkdf2 哈希、发会话 cookie。返回 `inherited_local_progress`：首个真人注册时把 id=1 的历史进度整体改挂到新账号（事务内，一次性） |
 | `POST /api/auth/login` | `{username,password}` | 校验哈希，发会话 cookie（`HttpOnly / SameSite=Lax / 30 天`） |
-| `POST /api/auth/admin-login` | `{username,password}` | 校验 `admin` 表，发 `is_admin=1` 会话 |
+| `POST /api/auth/admin-login` | `{username,password}` | 校验 `admin` 表，发 `is_admin=1` 会话；首次登录会为该管理员建一条影子学员行（`user.shadow=1`）并回填 `admin.user_id`，返回的 `user.id` 是影子行 id |
 | `POST /api/auth/logout` | — | 删会话行 + 清 cookie |
 
 密码 <8 位 / 两次不一致 / 用户名重复 → 400 / 409；密码错误统一 401 `用户名或密码不正确`（不区分账号是否存在）。
@@ -265,7 +265,7 @@
 | `POST /api/admin/word` | 同上 | `{word,phonetic,translation,pos,tag}`；`ON DUPLICATE KEY UPDATE` 修正词条并标 `verified=1` |
 | `GET /api/admin/overview?days=14` | 同上 | 管理端首页：今日活跃/答题/复习积压/语境正确率、逐日答题序列（补齐空白天）、语境错词 Top8、词源分布、各书在用人数 |
 | `GET /api/admin/learners` | 同上 | 跨账号学员表：当前书籍、今日答题、已掌握、复习积压、语境错题、最后活跃时间、`state`（stable/wobble/lost/never）+ 分组汇总 |
-| `GET /admin` | — | 返回同一份 SPA 产物；前端按路径前缀挂载管理端（独立登录页 + 宽屏侧边栏），**不加载学员端任何组件**，也不占用底部 tab。管理员身份在 `/` 上会被前端重定向到这里 |
+| `GET /admin` | — | 返回同一份 SPA 产物；前端按路径前缀挂载管理端（独立登录页 + 宽屏侧边栏），**不加载学员端任何组件**，也不占用底部 tab。直接访问 `/` 的管理员会被前端重定向到这里；主动点管理端「前往学员端」则放行（`sessionStorage.ky-view-as`） |
 
 ## 错误对照（v2 补充）
 

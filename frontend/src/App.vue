@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { store, initTheme, loadMe, refreshHeader, loadModelInfo, loadTodayStats, loadBooks, closeChat, closeModel, onAuthDone, onModelChanged } from './store.js'
 import { startStudyTimer } from './studyTimer.js'
 import AuthPanel from './components/AuthPanel.vue'
@@ -16,8 +16,20 @@ import AdminAuth from './components/admin/AdminAuth.vue'
 import ModelPanel from './components/ModelPanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 
+// 管理员主动从管理端点「前往学员端」时才允许停留在学员端；直接输网址进来的
+// 管理员仍然送回管理端，避免「用管理员登录却掉进背单词页」。
+const viewAsUser = ref(false)
+
 onMounted(async () => {
   initTheme()
+  try { viewAsUser.value = sessionStorage.getItem('ky-view-as') === 'user' } catch {}
+
+  // /?auth=1：管理端退出登录后落在这里，直接弹学员端登录框（带「管理员」页签）。
+  if (new URLSearchParams(location.search).get('auth') === '1') {
+    store.showAuth = true
+    try { history.replaceState(null, '', '/') } catch {}
+  }
+
   await loadMe()
 
   // 管理端：只取系统状态，不加载任何学员数据（书籍、今日统计、学习计时都不启动）
@@ -28,9 +40,9 @@ onMounted(async () => {
     return
   }
 
-  // 管理员账号没有学员身份：一旦在学员端识别出管理员，直接送进管理端，
-  // 否则会出现「用管理员登录，却掉进背单词页面」这种莫名其妙的状态。
-  if (store.me?.is_admin) {
+  // 管理员账号默认没有学员身份，直接送进管理端；只有主动点了「前往学员端」
+  // 才放行——这时他的学习数据挂在影子学员行上，不会串到别人。
+  if (store.me?.is_admin && !viewAsUser.value) {
     window.location.replace('/admin')
     return
   }
@@ -53,7 +65,7 @@ onMounted(async () => {
 
     <!-- 学员端 -->
     <template v-else>
-      <div class="redirect-hint" v-if="store.me?.is_admin">正在进入管理端…</div>
+      <div class="redirect-hint" v-if="store.me?.is_admin && !viewAsUser">正在进入管理端…</div>
 
       <template v-else>
         <AuthPanel v-if="store.showAuth || !store.me" @done="onAuthDone" @cancel="store.showAuth = false" />

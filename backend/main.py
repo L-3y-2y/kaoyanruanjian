@@ -1344,18 +1344,21 @@ def admin_overview(days: int = 14, user=Depends(require_admin)):
         head = one(
             conn,
             """SELECT COUNT(*) AS items, COUNT(DISTINCT user_id) AS users
-               FROM `answer_log` WHERE DATE(created_at)=CURDATE()""",
+               FROM `answer_log` WHERE DATE(created_at)=CURDATE()
+                 AND user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)""",
         )
         due = one(
             conn,
             """SELECT COUNT(*) AS c FROM `progress`
-               WHERE status='done' AND stage<>'mastered' AND next_due_at<=CURDATE()""",
+               WHERE status='done' AND stage<>'mastered' AND next_due_at<=CURDATE()
+                 AND user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)""",
         )
         cloze = one(
             conn,
             """SELECT COUNT(*) AS total, COALESCE(SUM(correct=1),0) AS ok
                FROM `answer_log`
-               WHERE kind='cloze' AND created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)""",
+               WHERE kind='cloze' AND created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)
+                 AND user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)""",
         )
         learners = one(
             conn, "SELECT COUNT(*) AS c FROM `user` WHERE password_hash<>''"
@@ -1363,7 +1366,8 @@ def admin_overview(days: int = 14, user=Depends(require_admin)):
         last = one(
             conn,
             """SELECT MAX(created_at) AS t, COUNT(DISTINCT user_id) AS c
-               FROM `answer_log` WHERE created_at>=DATE_SUB(CURDATE(), INTERVAL 6 DAY)""",
+               FROM `answer_log` WHERE created_at>=DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+                 AND user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)""",
         )
         rows = query(
             conn,
@@ -1371,6 +1375,7 @@ def admin_overview(days: int = 14, user=Depends(require_admin)):
                       COUNT(DISTINCT user_id) AS users
                FROM `answer_log`
                WHERE created_at>=DATE_SUB(CURDATE(), INTERVAL %s DAY)
+                 AND user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)
                GROUP BY DATE(created_at) ORDER BY d""",
             (days - 1,),
         )
@@ -1380,6 +1385,7 @@ def admin_overview(days: int = 14, user=Depends(require_admin)):
                FROM `answer_log` a JOIN `word` w ON w.id=a.word_id
                WHERE a.kind='cloze' AND a.correct=0
                  AND a.created_at>=DATE_SUB(NOW(), INTERVAL 14 DAY)
+                 AND a.user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)
                GROUP BY w.id, w.word, w.translation
                ORDER BY errors DESC, w.word ASC LIMIT 8""",
         )
@@ -1392,6 +1398,7 @@ def admin_overview(days: int = 14, user=Depends(require_admin)):
             conn,
             """SELECT b.id, b.name, COUNT(DISTINCT p.user_id) AS users
                FROM `book` b LEFT JOIN `progress` p ON p.book_id=b.id
+                 AND p.user_id NOT IN (SELECT id FROM `user` WHERE shadow=1)
                GROUP BY b.id, b.name ORDER BY b.sort_no""",
         )
 

@@ -40,7 +40,7 @@ def main():
         )
         row = one(conn, "SELECT id FROM `admin` WHERE username=%s", (username,))
     print(f"OK: 管理员 {username} 已就绪（id={row['id']}）。")
-    print("在页面点「切换账号」→「管理员」即可登录，然后会出现「词库管理」入口。")
+    print("打开 /admin 用这个账号登录即可；管理端右上角可以切到学员端或退出登录。")
     return 0
 
 

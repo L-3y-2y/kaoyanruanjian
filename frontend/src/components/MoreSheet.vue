@@ -26,6 +26,8 @@ function account() {
 }
 function admin() {
   // 管理端是独立页面（/admin）：宽屏侧边栏，不进底栏，也不占学员端一个 tab。
+  // 清掉「以管理员身份浏览学员端」的放行标记，回管理端就按管理端规则来。
+  try { sessionStorage.removeItem('ky-view-as') } catch {}
   closeMore()
   window.location.href = '/admin'
 }
