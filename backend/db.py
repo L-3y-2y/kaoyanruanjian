@@ -145,14 +145,28 @@ def ensure_columns(cur):
         # (next: 听写), 2 = "听写" done (next: 默写). Reset to 0 after a full
         # pass or a failure. Drives the three-step Ebbinghaus review.
         ("progress", "review_round", "TINYINT NOT NULL DEFAULT 0"),
+        ("progress", "cloze_wrong", "TINYINT NOT NULL DEFAULT 0"),
     ]
     for table, column, ddl in additions:
         meta = _column_meta(cur, table, column)
         if not meta or meta["c"] == 0:
             cur.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}")
 
-    # Learning now has a mandatory context-cloze gate between the five rounds
-    # and the review queue. Widen the ENUM in place so old rows keep their value.
+    # The old mandatory context-cloze gate was removed. Any batch still stuck
+    # in stage='cloze' is finalized here so those words enter review normally,
+    # then the ENUM is narrowed back to learning/memorized/mastered.
+    cur.execute("SELECT id, user_id, book_id FROM `daily_plan` WHERE stage='cloze'")
+    for row in cur.fetchall() or []:
+        cur.execute(
+            """UPDATE `daily_plan`
+               SET stage='memorized', memorized_at=COALESCE(memorized_at, NOW())
+               WHERE id=%s""", (row["id"],))
+        cur.execute(
+            """UPDATE `progress`
+               SET stage='memorized', review_stage=0, review_round=0,
+                   next_due_at=DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+               WHERE user_id=%s AND book_id=%s AND daily_plan_id=%s AND round=5""",
+            (row["user_id"], row["book_id"], row["id"]))
     cur.execute(
         """SELECT column_type FROM information_schema.columns
            WHERE table_schema=%s AND table_name='daily_plan' AND column_name='stage'""",
@@ -161,10 +175,10 @@ def ensure_columns(cur):
     stage_col = cur.fetchone()
     stage_type = str((stage_col or {}).get("column_type")
                      or (stage_col or {}).get("COLUMN_TYPE") or "")
-    if stage_type and "cloze" not in stage_type:
+    if stage_type and "cloze" in stage_type:
         cur.execute(
             """ALTER TABLE `daily_plan` MODIFY COLUMN `stage`
-               ENUM('learning','cloze','memorized','mastered') NOT NULL DEFAULT 'learning'"""
+               ENUM('learning','memorized','mastered') NOT NULL DEFAULT 'learning'"""
         )
 
     # Stage 1~3 made these NOT NULL because every answer belonged to a word.

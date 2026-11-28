@@ -67,8 +67,7 @@
 | `r1` | R1 认词 | `progress_id, word, phonetic, translation, pos, cycle_no, round, cycle_size, group_index, done, total` |
 | `r2` | R2 听写 | 同上，`speak_text`（供前端发音） |
 | `r3` | R3 默写 | 同上，`translation` 为题干、`speak_text` 供发音 |
-| `cloze_quiz` | 五轮全过、语境填空关卡待完成 | `plan_id, word_count`；`stage='cloze'`，尚未进复习池 |
-| `learning_done` | 语境填空全部通过，今日学习完成 | `plan_id, word_count, stage:"memorized"` |
+| `learning_done` | 今日 N 个词 R1～R5 全走完 | `plan_id, word_count, stage:"memorized"`；此时已进复习池、已解锁短文 |
 
 > R1 接口会返回 `translation`，但**前端只在用户点「陌生」后才展开显示**；服务端不控制这个视觉状态（它属于界面呈现，不是学习进度）。
 > R2 / R3 / R5 的 `speak_text` 就是单词拼写本身，浏览器发音需要它；答案判定仍由服务端做。
@@ -248,15 +247,15 @@
 
 所有 chat 接口**只写 `chat_session`/`chat_message`，不碰 progress / answer_log / 五轮状态**。8 轮上限、最多 8 次提问；未配 Key 返回 400。AI 角色、出题难度、今日词库、要规避的旧文章都按当前书注入；已开会话沿用建会话时的书。
 
-## 语境填空（今日学习必经关卡，非旁路）
+## 语境填空（短文内练习，不改进度）
 
 | 接口 | 入参 | 返回 / 行为 |
 | --- | --- | --- |
-| `GET /api/learn/cloze` | 无（当前书今日计划，需 `stage='cloze'`） | `{items:[{id, sentence, translation, pos, status, attempts}], done, total, complete}`；`sentence` 已把答案词挖空，答案只存服务端 |
-| `POST /api/learn/cloze/check` | `{item_id, value}` | `{correct, answer, done, total, complete, state}`；答错可重试并写 `answer_log`；全部通过时 finalize 批次，返回 `state=learning_done` |
+| `GET /api/articles/cloze?article_id=` | 文章 id | `{items:[{id, sentence, translation, pos, source, status, attempts}], done, total, complete}`；`source='article'` 为原文句、`'extra'` 为今日未收录词的补充例句；`sentence` 已挖空，答案只存服务端 |
+| `POST /api/articles/cloze/check` | `{item_id, value}` | `{correct, answer, done, total, weak}`；答错写 `answer_log` 并把该词 `progress.cloze_wrong=1`（次日复习队列优先），答对不写 progress |
 | `GET /api/scenario/example?word_id=` | 词 id | `{seq, sentence, translation, source}`：例句源，仅生成/缓存，不判分 |
 
-五轮走完时 `advance_state` 生成 `learn_cloze` 行并把计划置 `stage='cloze'`，**此时不进复习池**。每个词按 `(word, book)` 懒生成例句并 `INSERT IGNORE` 缓存；答案留在服务端，短路判分防泄题。全部通过后 `_finalize_learn` 才写 `memorized_at`、置 `stage='memorized'` 并排入 1 天后的艾宾浩斯复习。图片联想接口已移除；短文沉浸复用 `/api/articles/*`。
+五轮走完即 `stage='memorized'` 进复习池、解锁短文。语境填空挂在每篇短文下方，首次揭示时按 `(article, word, source)` 幂等生成：`article` 类直接从正文取含目标词的句子挖空，`extra` 类用今日学过但文章未收录的词按 `(word, book)` 懒生成例句。全部练习只写 `answer_log`，**不写 progress 的五轮状态**；唯一例外是答错时置 `cloze_wrong` 标记，让次日复习优先安排该词（复习三轮通过后清零）。旧的 `/api/learn/cloze*` 关卡接口已移除。
 
 ## 阶段 4：管理员词库（v2 已实现）
 

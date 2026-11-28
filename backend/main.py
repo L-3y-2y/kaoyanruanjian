@@ -202,14 +202,14 @@ def review_pass(conn, p):
             conn,
             """UPDATE `progress`
                SET stage='mastered', review_round=0, review_stage=%s,
-                   next_due_at=NULL, last_review_at=NOW()
+                   cloze_wrong=0, next_due_at=NULL, last_review_at=NOW()
                WHERE id=%s""",
             (new_stage, p["id"]),
         )
         # Mirror the mastered flag onto every round row of this word.
         execute(
             conn,
-            """UPDATE `progress` SET stage='mastered'
+            """UPDATE `progress` SET stage='mastered', cloze_wrong=0
                WHERE user_id=%s AND book_id=%s AND word_id=%s""",
             (p["user_id"], p["book_id"], p["word_id"]),
         )
@@ -217,7 +217,7 @@ def review_pass(conn, p):
         execute(
             conn,
             """UPDATE `progress`
-               SET review_round=0, review_stage=%s,
+               SET review_round=0, review_stage=%s, cloze_wrong=0,
                    next_due_at=DATE_ADD(CURDATE(), INTERVAL %s DAY),
                    last_review_at=NOW()
                WHERE id=%s""",
@@ -310,7 +310,7 @@ JOIN `word` w ON w.id = p.word_id
 WHERE p.user_id=%s AND p.book_id=%s AND p.round=5 AND p.status='done'
   AND p.stage='memorized' AND p.next_due_at <= CURDATE()
   AND p.review_round < 3
-ORDER BY p.review_round ASC, p.id ASC
+ORDER BY p.cloze_wrong DESC, p.review_round ASC, p.id ASC
 LIMIT 1
 """
 
@@ -346,12 +346,6 @@ def fetch_state(conn, uid, mode, book_id, plan_id=None):
         counts = plan_totals(conn, uid, plan["id"], 1, 5)
         row = one(conn, NEXT_ITEM_SQL, (uid, book["id"], plan["id"], 1, 5))
         if not row:
-            # Five rounds are over. The mandatory context-cloze gate must be
-            # cleared before the batch becomes "memorized"; until then the
-            # plan stays in stage='cloze' and keeps the word out of review.
-            if plan["stage"] == "cloze":
-                return {"kind": "cloze_quiz", "plan_id": plan["id"],
-                        "word_count": plan["word_count"]}
             return {"kind": "learning_done", "plan_id": plan["id"],
                     "word_count": plan["word_count"],
                     "stage": plan["stage"] or "memorized"}
@@ -380,13 +374,13 @@ def fetch_state(conn, uid, mode, book_id, plan_id=None):
 
 
 def _finalize_learn(conn, uid, plan, book_id):
-    """After EVERY context-cloze item passes: enter the Ebbinghaus review pool."""
-    if not plan or plan["stage"] not in ("learning", "cloze"):
+    """All five rounds done: enter the Ebbinghaus review pool immediately."""
+    if not plan or plan["stage"] != "learning":
         return
     execute(conn,
             """UPDATE `daily_plan`
                SET stage='memorized', memorized_at=COALESCE(memorized_at, NOW())
-               WHERE id=%s AND stage IN ('learning','cloze')""", (plan["id"],))
+               WHERE id=%s AND stage='learning'""", (plan["id"],))
     execute(conn,
             "UPDATE `progress` SET stage='memorized' WHERE user_id=%s AND daily_plan_id=%s AND stage='none'",
             (uid, plan["id"]))
@@ -398,33 +392,12 @@ def _finalize_learn(conn, uid, plan, book_id):
             (REVIEW_INTERVALS[0], uid, plan["id"]))
 
 
-def ensure_cloze(conn, uid, plan, book):
-    """Build the mandatory context-cloze rows once a plan's five rounds finish."""
-    existing = one(conn, "SELECT COUNT(*) AS c FROM `learn_cloze` WHERE daily_plan_id=%s",
-                   (plan["id"],))["c"]
-    if existing:
-        return
-    words = scenario_service.plan_cloze_words(conn, uid, book["id"], plan["id"], limit=5)
-    for w in words:
-        ex = scenario_service.ensure_example(conn, w["id"], book["id"], book)
-        if not ex or not ex.get("sentence"):
-            continue
-        execute(
-            conn,
-            """INSERT IGNORE INTO `learn_cloze`
-               (user_id, book_id, daily_plan_id, word_id, sentence, translation, answer)
-               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-            (uid, book["id"], plan["id"], w["id"], ex["sentence"],
-             ex.get("translation"), w["word"]),
-        )
-
-
 def advance_state(conn, uid, mode, book_id, plan_id=None):
     """Advance plan/stage transitions after a WRITE. Call only from write routes.
 
-    Learn mode: once all 5 rounds are done, generate the context-cloze gate and
-    hold the plan in stage='cloze'. Finalization (memorized + review queue) only
-    happens in the cloze check route after every sentence has been passed.
+    Learn mode: once all 5 rounds are done, finalize straight into the
+    Ebbinghaus review pool. Context practice lives in the article page and
+    never gates progress.
     """
     if mode == "learn":
         if plan_id:
@@ -438,15 +411,7 @@ def advance_state(conn, uid, mode, book_id, plan_id=None):
             return
         if plan_totals(conn, uid, plan["id"], 1, 5)["done"] < plan["word_count"] * 5:
             return
-        book = book_row(conn, book_id)
-        ensure_cloze(conn, uid, plan, book)
-        total = one(conn, "SELECT COUNT(*) AS c FROM `learn_cloze` WHERE daily_plan_id=%s",
-                    (plan["id"],))["c"]
-        if total:
-            execute(conn, "UPDATE `daily_plan` SET stage='cloze' WHERE id=%s", (plan["id"],))
-        else:
-            # No usable sentences (rare): finalize directly rather than trap.
-            _finalize_learn(conn, uid, plan, book_id)
+        _finalize_learn(conn, uid, plan, book_id)
         return
 
     # review mode: nothing to advance here (handled in the answer route).
@@ -473,7 +438,7 @@ class HeartbeatIn(BaseModel):
     seconds: int = Field(ge=1, le=3600)
 
 
-class ClozeCheckIn(BaseModel):
+class QuizCheckIn(BaseModel):
     item_id: int
     value: str = ""
 
@@ -965,79 +930,167 @@ def _cloze_mask(sentence, answer):
     return pattern.sub(lambda m: "_" * len(m.group(0)), sentence or "")
 
 
-@app.get("/api/learn/cloze")
-def learn_cloze(user=Depends(current_user)):
-    """Today's mandatory context-cloze items. Answers stay server-side."""
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _sentence_with(body, surface):
+    """Pick the sentence in `body` that contains `surface` (word-boundary, inflections)."""
+    text = body or ""
+    pattern = re.compile(r"\b" + re.escape(surface or "") + r"\w*\b", re.IGNORECASE)
+    for sent in _SENT_SPLIT.split(text):
+        if pattern.search(sent):
+            return sent.strip()
+    return ""
+
+
+def _article_covered_ids(conn, article_id):
+    return {r["word_id"] for r in query(
+        conn, "SELECT DISTINCT word_id FROM `article_word` WHERE article_id=%s",
+        (article_id,))}
+
+
+def ensure_article_cloze(conn, user, book, art):
+    """Build fill-in items once per article: its target words + fresh sentences for
+    today's uncovered words. Answers are stored server-side only."""
+    existing = one(
+        conn, "SELECT COUNT(*) AS c FROM `article_cloze` WHERE article_id=%s",
+        (art["id"],))["c"]
+    if existing:
+        return
+    covered = _article_covered_ids(conn, art["id"])
+    # 1) words already inside the article — sentence taken verbatim from the body
+    marked = query(
+        conn,
+        """SELECT m.word_id, m.surface, m.translation_snapshot AS translation,
+                  w.word AS answer, w.pos
+           FROM `article_word` m JOIN `word` w ON w.id=m.word_id
+           WHERE m.article_id=%s ORDER BY m.position ASC LIMIT 5""",
+        (art["id"],),
+    )
+    for m in marked:
+        sentence = _sentence_with(art["body"], m["surface"])
+        if not sentence:
+            continue
+        masked = _cloze_mask(sentence, m["answer"])  # hides surface + inflections
+        if masked == sentence:  # nothing got blanked — skip, no leak
+            continue
+        execute(
+            conn,
+            """INSERT IGNORE INTO `article_cloze`
+               (user_id, book_id, article_id, word_id, sentence, translation,
+                answer, source)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,'article')""",
+            (user["id"], book["id"], art["id"], m["word_id"], masked,
+             m["translation"], m["answer"]),
+        )
+    # 2) today's words the article did NOT cover — a fresh sentence per word
+    plan_id = art.get("daily_plan_id")
+    if plan_id:
+        today = query(
+            conn,
+            """SELECT DISTINCT w.id, w.word, w.translation, w.pos
+               FROM `progress` p JOIN `word` w ON w.id=p.word_id
+               WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
+                 AND p.round=5 AND w.id NOT IN (
+                     SELECT word_id FROM `article_word` WHERE article_id=%s)
+               ORDER BY w.id LIMIT 5""",
+            (user["id"], book["id"], plan_id, art["id"]),
+        )
+        for w in today:
+            ex = scenario_service.ensure_example(conn, w["id"], book["id"], book)
+            if not ex or not ex.get("sentence"):
+                continue
+            masked = _cloze_mask(ex["sentence"], w["word"])
+            if masked == ex["sentence"]:
+                continue
+            execute(
+                conn,
+                """INSERT IGNORE INTO `article_cloze`
+                   (user_id, book_id, article_id, word_id, sentence, translation,
+                    answer, source)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,'extra')""",
+                (user["id"], book["id"], art["id"], w["id"], masked,
+                 ex.get("translation"), w["word"]),
+            )
+
+
+@app.get("/api/articles/cloze")
+def article_cloze(article_id: int, user=Depends(current_user)):
+    """Fill-in quiz for one article: answer words stay on the server."""
     with transaction() as conn:
         book = book_row(conn, user["book_id"])
-        plan = _learn_plan(conn, user["id"], book["id"])
-        if not plan or plan["stage"] != "cloze":
-            return {"items": [], "done": 0, "total": 0, "complete": False}
+        art = one(
+            conn,
+            """SELECT * FROM `article`
+               WHERE id=%s AND user_id=%s AND book_id=%s""",
+            (article_id, user["id"], book["id"]),
+        )
+        if not art:
+            raise HTTPException(status_code=404, detail="找不到这篇短文")
+        ensure_article_cloze(conn, user, book, art)
         rows = query(
             conn,
-            """SELECT c.id, c.sentence, c.translation, c.status, c.attempts,
-                      w.id AS word_id, w.pos, w.word AS answer
-               FROM `learn_cloze` c JOIN `word` w ON w.id=c.word_id
-               WHERE c.user_id=%s AND c.book_id=%s AND c.daily_plan_id=%s
-               ORDER BY c.id""",
-            (user["id"], book["id"], plan["id"]),
+            """SELECT c.id, c.sentence, c.translation, c.source, c.status,
+                      c.attempts, w.pos
+               FROM `article_cloze` c JOIN `word` w ON w.id=c.word_id
+               WHERE c.article_id=%s AND c.user_id=%s AND c.book_id=%s
+               ORDER BY c.source='extra', c.id""",
+            (art["id"], user["id"], book["id"]),
         )
         items = [{
-            "id": r["id"], "sentence": _cloze_mask(r["sentence"], r["answer"]),
+            "id": r["id"], "sentence": r["sentence"],
             "translation": r["translation"], "pos": r["pos"],
-            "status": r["status"], "attempts": int(r["attempts"] or 0),
+            "source": r["source"], "status": r["status"],
+            "attempts": int(r["attempts"] or 0),
         } for r in rows]
         passed = sum(1 for r in rows if r["status"] == "passed")
         return {"items": items, "done": passed, "total": len(rows),
                 "complete": bool(rows) and passed == len(rows)}
 
 
-@app.post("/api/learn/cloze/check")
-def learn_cloze_check(req: ClozeCheckIn, user=Depends(current_user)):
-    """Grade one cloze item; finishing ALL of them finalizes the learn batch."""
+@app.post("/api/articles/cloze/check")
+def article_cloze_check(req: QuizCheckIn, user=Depends(current_user)):
+    """Grade one fill-in. Wrong answers flag the word for next-day review."""
     with transaction() as conn:
         book = book_row(conn, user["book_id"])
-        plan = _learn_plan(conn, user["id"], book["id"])
-        if not plan or plan["stage"] != "cloze":
-            raise HTTPException(status_code=409, detail="当前没有待完成的语境填空")
         row = one(
             conn,
-            """SELECT c.*, w.word AS answer FROM `learn_cloze` c
+            """SELECT c.*, w.word AS answer FROM `article_cloze` c
                JOIN `word` w ON w.id=c.word_id
-               WHERE c.id=%s AND c.user_id=%s AND c.book_id=%s AND c.daily_plan_id=%s""",
-            (req.item_id, user["id"], book["id"], plan["id"]),
+               WHERE c.id=%s AND c.user_id=%s AND c.book_id=%s""",
+            (req.item_id, user["id"], book["id"]),
         )
         if not row:
             raise HTTPException(status_code=404, detail="找不到这道语境填空题")
         if row["status"] == "passed":
-            return {"correct": True, "answer": row["answer"], "state": None}
+            return {"correct": True, "answer": row["answer"],
+                    "done": None, "total": None, "weak": False}
         correct = norm(req.value) == norm(row["answer"])
         execute(conn,
-                """UPDATE `learn_cloze`
+                """UPDATE `article_cloze`
                    SET attempts=attempts+1, status=IF(%s,'passed','pending')
                    WHERE id=%s""", (int(correct), row["id"]))
+        # Every wrong attempt marks the word weak; review queue prioritises it.
+        if not correct:
+            execute(conn,
+                    """UPDATE `progress` SET cloze_wrong=1
+                       WHERE user_id=%s AND book_id=%s AND word_id=%s AND round=5""",
+                    (user["id"], book["id"], row["word_id"]))
         execute(conn,
                 """INSERT INTO `answer_log`
-                   (user_id, book_id, word_id, daily_plan_id, progress_id,
-                    round, kind, action, user_answer, correct)
-                   VALUES (%s,%s,%s,%s,%s,5,'cloze','cloze',%s,%s)""",
-                (user["id"], book["id"], row["word_id"], plan["id"],
-                 None, req.value, int(correct)))
+                   (user_id, book_id, word_id, round, kind, action,
+                    user_answer, correct)
+                   VALUES (%s,%s,%s,5,'cloze','article_cloze',%s,%s)""",
+                (user["id"], book["id"], row["word_id"], req.value, int(correct)))
         totals = one(
             conn,
             """SELECT COUNT(*) AS total, SUM(status='passed') AS passed
-               FROM `learn_cloze` WHERE daily_plan_id=%s""",
-            (plan["id"],),
+               FROM `article_cloze` WHERE article_id=%s""",
+            (row["article_id"],),
         )
-        passed = int(totals["passed"] or 0)
-        total = int(totals["total"] or 0)
-        result = {"correct": correct, "answer": row["answer"] if correct else None,
-                  "done": passed, "total": total, "complete": False, "state": None}
-        if total and passed == total:
-            _finalize_learn(conn, user["id"], plan, book["id"])
-            result["complete"] = True
-            result["state"] = fetch_state(conn, user["id"], "learn", book["id"])
-        return result
+        return {"correct": correct, "answer": row["answer"] if correct else None,
+                "done": int(totals["passed"] or 0), "total": int(totals["total"] or 0),
+                "weak": not correct}
 
 
 # ---------------------------------------------------------------- daily articles

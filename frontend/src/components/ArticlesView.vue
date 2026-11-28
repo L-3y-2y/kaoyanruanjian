@@ -45,7 +45,7 @@ async function reveal(article) {
     })
     article.segments = r.segments
     shown.value[article.id] = true
-    ensureCloze(article)
+    loadCloze(article)
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
@@ -76,52 +76,38 @@ function hide(article) {
   activeWord.value = null
 }
 
-function cleanMeaning(text) {
-  return String(text || '').split(';')[0].split('，')[0].trim()
-}
+const clozeAnswers = ref({})
+const clozeFeedback = ref({})
+const clozeBusy = ref(false)
 
-function ensureCloze(article) {
+// 语境填空：题目与答案都在服务端，浏览器只拿到挖空后的句子。
+async function loadCloze(article) {
   if (!shown.value[article.id] || cloze.value[article.id]) return
-  const segs = article.segments || []
-  const marked = segs.map((s, i) => ({ ...s, i })).filter(s => s.word && s.word.is_target)
-  if (!marked.length) return
-  const pool = [...new Set(marked.map(s => cleanMeaning(s.word.translation)).filter(Boolean))]
-  const items = marked.slice(0, Math.min(5, marked.length)).map((m, idx) => {
-    const full = segs.map((s, i) => s.word ? `{{${i}}}` : s.text).join('')
-    const token = `{{${m.i}}}`
-    const pos = full.indexOf(token)
-    const starts = [full.lastIndexOf('.', pos), full.lastIndexOf('!', pos), full.lastIndexOf('?', pos)]
-    const start = Math.max(0, ...starts.map(x => x + 1))
-    const ends = [full.indexOf('.', pos), full.indexOf('!', pos), full.indexOf('?', pos)].filter(x => x >= 0)
-    const end = ends.length ? Math.min(...ends) + 1 : full.length
-    const sentence = full.slice(start, end).replace(token, '______')
-      .replace(/\{\{(\d+)\}\}/g, (_, i) => segs[Number(i)].text).trim()
-    const right = cleanMeaning(m.word.translation) || m.word.surface
-    const others = pool.filter(x => x && x !== right)
-    const opts = [right, ...others.slice(0, 3)]
-    while (opts.length < 4) opts.push('（暂无干扰项）')
-    const shift = (idx + m.i) % 4
-    const ordered = opts.slice(shift).concat(opts.slice(0, shift))
-    return { sentence, options: ordered, answer: right, picked: null, checked: false }
-  })
-  cloze.value[article.id] = { items, checked: false }
+  try {
+    cloze.value[article.id] = await api(`/api/articles/cloze?article_id=${article.id}`)
+  } catch (e) { error.value = e.message }
 }
 
-function pick(item, opt) {
-  if (item.checked) return
-  item.picked = opt
-}
-
-function checkCloze(article) {
-  const c = cloze.value[article.id]
-  if (!c) return
-  c.items.forEach(i => { i.checked = true })
-  c.checked = true
-}
-
-function clozeScore(article) {
-  const c = cloze.value[article.id]
-  return c ? c.items.filter(i => i.picked === i.answer).length : 0
+async function checkOne(article, item) {
+  if (clozeBusy.value || item.status === 'passed') return
+  const value = String(clozeAnswers.value[item.id] || '').trim()
+  if (!value) return
+  clozeBusy.value = true
+  try {
+    const r = await api('/api/articles/cloze/check', {
+      method: 'POST', body: JSON.stringify({ item_id: item.id, value })
+    })
+    const c = cloze.value[article.id]
+    c.items = c.items.map(it => it.id === item.id
+      ? { ...it, status: r.correct ? 'passed' : it.status, attempts: it.attempts + 1 }
+      : it)
+    c.done = r.done ?? c.done
+    c.total = r.total ?? c.total
+    c.complete = r.done != null && r.done === r.total
+    clozeFeedback.value = { ...clozeFeedback.value,
+      [item.id]: r.correct ? 'ok' : (r.weak ? 'weak' : 'bad') }
+  } catch (e) { error.value = e.message }
+  finally { clozeBusy.value = false }
 }
 
 function sceneLabel(id) {
@@ -205,22 +191,26 @@ onMounted(async () => {
         </div>
 
         <div v-if="shown[a.id] && cloze[a.id]" class="cloze">
-          <h3>语境小测 · 选词义</h3>
-          <p class="muted small">从同一篇文章的词里挑干扰项，先选再核对，答错会显示释义。</p>
-          <div v-for="(q, qi) in cloze[a.id].items" :key="qi" class="question">
+          <h3>语境填空 · 写出英文单词</h3>
+          <p class="muted small">句子来自本文，另加今日学过但短文未收录的词。必须想起来自己写，答错的词明天复习优先安排。</p>
+          <p v-if="!cloze[a.id].items.length" class="muted small">这篇短文暂无可练习的词。</p>
+          <div v-for="(q, qi) in cloze[a.id].items" :key="q.id" class="question">
             <p class="q-stem">{{ qi + 1 }}. {{ q.sentence }}</p>
-            <div class="options">
-              <label v-for="(opt, oi) in q.options" :key="oi"
-                     :class="{ picked: q.picked === opt, locked: q.checked,
-                               right: q.checked && opt === q.answer,
-                               wrong: q.checked && q.picked === opt && opt !== q.answer }"
-                     @click="pick(q, opt)">{{ opt }}</label>
+            <p class="muted small" v-if="q.translation">提示：{{ q.translation }}</p>
+            <span class="chip tiny" v-if="q.source === 'extra'">今日词 · 补充句</span>
+            <div v-if="q.status === 'passed'" class="answer small">✓ 已填对</div>
+            <div v-else class="answer-row">
+              <input v-model="clozeAnswers[q.id]" :disabled="clozeBusy"
+                     placeholder="填入挖空的英文单词" @keyup.enter="checkOne(a, q)" />
+              <button class="primary" :disabled="clozeBusy" @click="checkOne(a, q)">提交</button>
             </div>
-            <p v-if="q.checked" class="answer small">正确答案：{{ q.answer }}</p>
+            <p v-if="clozeFeedback[q.id] === 'ok'" class="ok-note">✓ 填对了，记得牢</p>
+            <p v-if="clozeFeedback[q.id] === 'bad'" class="bad-note">✗ 再想想（大小写不敏感）</p>
+            <p v-if="clozeFeedback[q.id] === 'weak'" class="bad-note">✗ 已标记薄弱，明天复习优先安排，继续重试</p>
           </div>
           <div class="actions">
-            <button v-if="!cloze[a.id].checked" class="primary" @click="checkCloze(a)">核对答案</button>
-            <span v-else class="chip">答对 {{ clozeScore(a) }} / {{ cloze[a.id].items.length }}</span>
+            <span class="chip">已填对 {{ cloze[a.id].done }} / {{ cloze[a.id].total }}</span>
+            <span v-if="cloze[a.id].complete" class="ok-note">语境巩固完成，去复习板块看看薄弱词吧。</span>
           </div>
         </div>
 
