@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { store, openMore, toggleTheme } from '../store.js'
+import { store, openMore, openChat, toggleTheme } from '../store.js'
 
 const logoText = computed(() => ({
   ky: '研', cet4: '四', cet6: '六', gk: '高',
@@ -33,6 +33,9 @@ const durationText = computed(() => {
       </div>
     </div>
     <div class="header-right">
+      <button class="ai-btn" @click="openChat(null)" title="英语 AI 助手">
+        <span class="ai-spark">✦</span><span class="ai-label">英语 AI</span>
+      </button>
       <button class="theme-toggle" @click="toggleTheme">
         {{ store.theme === 'light' ? '深色' : '浅色' }}
       </button>
