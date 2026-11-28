@@ -208,7 +208,7 @@ def main():
             if "HTTP 403" not in str(exc):
                 raise
         try:
-            cli.call("/api/auth/users")
+            cli.call("/api/admin/users")
             raise AssertionError("ordinary account must NOT enumerate users")
         except AssertionError as exc:
             if "HTTP 403" not in str(exc):

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
 
-from db import connect, execute, one, query, transaction
+from db import connect, execute, one, transaction
 
 COOKIE = "ky_session"
 SESSION_DAYS = 30
@@ -343,14 +343,3 @@ def logout(request: Request, response: Response):
             execute(conn, "DELETE FROM `user_session` WHERE token=%s", (token,))
     response.delete_cookie(COOKIE, path="/")
     return {"ok": True}
-
-
-@router.get("/api/auth/users")
-def list_users(user=Depends(require_admin)):
-    """Admin-only: enumerate usernames. Never exposed to anonymous callers."""
-    conn = connect()
-    try:
-        rows = query(conn, "SELECT id, username FROM `user` ORDER BY id")
-        return {"users": rows}
-    finally:
-        conn.close()

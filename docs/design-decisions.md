@@ -324,3 +324,45 @@ R4 的汉语释义**不机器判分**：需求定的是「写完显示标准答�
 | 考研 | 180-240 词 / 10 空 | 约 130 词 | 222 词 / 10 空 |
 
 仍未解决：高考卡片里的文章本身偶尔会出现 `sustainability`、`inadequacy` 这类超纲词——文章由模型写，`level` 只是提示，压不住词汇溢出。真要卡死得给每个书架配词表白名单做校验，属于二期。
+
+## 31. 一次外部评审后的文档与工程债清理
+
+一份外部评审（DeepSeek 通读 `docs/项目架构说明.md` + 代码）提出 20 条，逐条核查后的结论与处理如下。**结论：3 条是真正的文档硬伤，5 条是"文档没写清但其实做了"，其余是已知工程债。**
+
+### 31.1 表数量：不是"选一个数字"，而是两个数字都对
+
+文档出现 12 / 16 / 19 三个数。核查：
+- `grep -c "CREATE TABLE" backend/schema.sql` → **16**，§5 表格也正好 16 行；
+- `SHOW TABLES` → **21**，`GET /api/health` 的 `tables` 也是 21。
+
+多出来的 5 张是早期设计的死表（`checkins`、`learn_cloze`、`study_tasks`、`subjects`、`word_scene`），全仓库 grep 不到引用。所以正确表述是 **16（schema 定义）/ 21（库里现存）**，文档统一按这个写，并加 `scripts/drop_legacy_tables.py`（默认 dry-run）供需要时清理。原文档那两个"12 张表"和标题"19 张表"都是笔误/陈旧值。
+
+### 31.2 接口清单漏了正文详述过的接口
+
+§8 用三段讲 `POST /api/chat/practice`，§11 的 AI 答疑分组却没有它。补的时候顺手把同样漏掉的 `GET /api/books`、`GET|POST /api/book/current`、`/api/study/*`、`/api/articles/cloze*`、`/api/admin/words`、`GET /admin` 一起补齐——这类"表格漏项"比数字错误更伤，因为读者会认为功能不存在。
+
+### 31.3 组件目录漏了 PracticeCard.vue（还不止一个）
+
+补 `PracticeCard.vue` 时发现 `TopBar.vue`、`ConfirmDialog.vue`、`admin/AdminAccountMenu.vue` 也没在树上，README 里甚至还留着早已删除的 `ScenarioView / AdminView`。两处目录已按实际 `ls` 重写。
+
+### 31.4 `/api/auth/users` 与 `/api/admin/users` 并存 → 删掉前者
+
+两个接口确实同时存在：`/api/auth/users` 只回 `id + username`，是极早期的实现；唯一调用方是 `scripts/verify_full.py` 里"普通账号枚举用户应返回 403"那条断言——**等于为了一个测试保留一个 API**。处理：删除 `auth.py` 的该路由，自检改打 `/api/admin/users`（它本来就 `password_hash<>''` 过滤影子行、字段更全）。现在管理员相关接口只有 `/api/admin/*` 一处。
+
+### 31.5 评审说"没提 SameSite"，其实代码里是 `lax`
+
+`auth.py:_set_cookie()` 一直是 `httponly=True, samesite="lax", secure=COOKIE_SECURE`。缺的是**文档**，不是防御。已在 §9 补三小段：CSRF 现状（SameSite=lax + JSON POST + 不放开 CORS，故无 CSRF token，也没有 Origin 校验）、Session 生命周期（登录签发新的 256-bit 随机 token，不采信客户端标识 → 无会话固定；但不踢旧会话，多设备可并存）、限速实现（进程内字典，多 worker 失效）。
+
+### 31.6 评审说"缺单元测试"，补了最小可跑的一套
+
+`backend/tests/test_units.py`，15 个用例，`python backend/tests/test_units.py` 直接跑，**不引入 pytest**（项目 venv 里没有测试运行器，且要求"新克隆即可跑"）。覆盖：四本书画像的篇幅/题量排序、词形还原与覆盖率扫描、`_clean_para`、挖空候选的停用词与缩写过滤、`_mark_blanks` 的十个编号/切片完整性/拒绝九空·重复·相邻、`_cloze_picks_valid`、`_questions_valid` 的按书题量、`_card_valid` 拒绝过短正文。
+
+它替代不了端到端自检（状态机与事务仍靠 `verify_full.py`），但能让"改一个纯函数就把覆盖率校验弄坏"这类事故在 1 秒内暴露。
+
+### 31.7 明确不装的工程债
+
+写进 `docs/项目架构说明.md` §15，不再含糊：`main.py` 1668 行单文件聚合（含拆分顺序建议）、启动时 `ensure_indexes` 会 ALTER、进程内限速、无 CI / Docker / 可观测性 / LLM 全局额度、复习无每日上限（词级 `LIMIT 1` + `cloze_wrong` 优先）、同词跨书独立进度、覆盖率只保证"出现"不保证"用得自然"、题卡判分在浏览器（不防作弊）。
+
+### 31.8 过期数字按 `wc -l` 重写
+
+代码规模原写"后端 2700 / 前端 800 / 自检 530 ≈ 4800"，实测 **后端 5194 / 前端 4018 / scripts 768 ≈ 1 万**；`main.py 884 → 1668`、`content.py 865 → 1139`、`chat.py 206 → 878`。同时把 `file:line` 一律改成符号名（`file:line` 三天就过期，评审第一眼就会判定"文档是假的"）。

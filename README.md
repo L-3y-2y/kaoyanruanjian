@@ -39,10 +39,15 @@ D:\kaoyanruanjian\
 ├─ frontend\                Vue 3 + Vite
 │   ├─ src\api.js           fetch 封装（带 cookie）+ 发音
 │   ├─ src\App.vue          外壳、账号、导航、模型/答疑面板挂载
-│   ├─ src\components\      AuthPanel / LearnView / ReviewView / ScenarioView /
-│   │                       ArticlesView / ReadingView / AdminView / ChatPanel
+│   ├─ src\components\      TopBar / TabBar / MoreSheet / LearnView / ReviewView /
+│   │                       ArticlesView / ReadingView / ChatPanel / PracticeCard /
+│   │                       ModelPanel / AuthPanel / WordBank / ConfirmDialog / AdminShell
+│   ├─ src\components\admin\  AdminAuth / AdminAccountMenu / OverviewPanel /
+│   │                       LearnersPanel / ModelPanelAdmin
 │   ├─ src\style.css
 │   └─ dist\                构建产物，由 FastAPI 同源托管（gitignore）
+├─ backend\tests\
+│   └─ test_units.py        纯函数单测（不连库、不烧 token）
 ├─ scripts\
 │   ├─ import_ecdict.py     从 ECDICT 导入 ky 考研词（已跑）
 │   ├─ import_books.py      按考试标签导入四/六/高考词（已跑）
@@ -50,6 +55,7 @@ D:\kaoyanruanjian\
 │   ├─ create_admin.py      初始化管理员账号（密码你自己输）
 │   ├─ weekly_publish.py    周五晚定时发布，可挂 Windows 计划任务
 │   ├─ verify_full.py       完整版端到端自检（自动清理测试数据）
+│   ├─ drop_legacy_tables.py 清理 5 张历史遗留空表（默认 dry-run）
 │   ├─ seed_words.py        手动刷新内置 102 词
 │   └─ migrate_ebbinghaus.py  历史批次迁移到艾宾浩斯复习（已跑）
 ├─ data\
@@ -203,13 +209,21 @@ Navicat 里那个只显示自己库的连接 → `kaoyanruanjian`：
 - `user` / `admin` / `user_session` 账号与会话
 - `article` / `article_word` 短文与释义快照 · `question` 阅读题目
 
-> 旧 Node 演示版的 `subjects / study_tasks / checkins` 三张表与本软件无关，**没有删除**（避免误伤数据）。
+> 早期版本遗留的 `checkins / learn_cloze / study_tasks / subjects / word_scene` 五张表与本软件现行功能无关（代码里已无任何引用），**没有自动删除**（避免误伤数据）。`schema.sql` 只定义 16 张表，库里会显示 21 张就是这个原因。要清理请手动跑 `backend\.venv\Scripts\python.exe scripts\drop_legacy_tables.py`（默认只打印，加 `--yes` 才真删）。
 
 ---
 
 ## 七、自检
 
-后端在跑时执行：
+纯函数单测（不连库、不烧 token、不依赖 pytest）：
+
+```
+backend\.venv\Scripts\python.exe backend\tests\test_units.py
+```
+
+覆盖词形还原、覆盖率扫描、练习卡挖空标记（含"词不在文中 / 两空相邻"必须被拒）、四本书的考试画像与题卡校验。改了这几处先跑它，几秒钟出结果。
+
+端到端自检（后端要在跑）：
 
 ```
 backend\.venv\Scripts\python.exe scripts\verify_full.py
