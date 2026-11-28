@@ -20,6 +20,7 @@ Design rules (mirror docs/design-decisions.md):
 
 import json
 import os
+import random
 import re
 
 from db import detach_for_llm, execute, one, query, transaction
@@ -378,28 +379,34 @@ def _clean_para(text):
     return t.strip()
 
 
-def _paged_passage(bank, book):
-    """A full-length reading passage, written one paragraph at a time.
+def _paged_passage(bank, book, kind="reading"):
+    """A full-length passage, written one paragraph at a time.
 
     Asking a small/free model for a 300-word passage in one call returns ~110
     words no matter how the prompt words it (measured). Per-paragraph requests
     of 50-70 words each, chained on the running tail, actually reach the shelf's
-    length.
+    length. `kind` picks which shelf length applies (reading vs cloze).
     """
     p = profile_for(book)
-    lo, _hi = p["reading"]["words"]
-    total = max(3, min(8, round(lo / 45)))
+    lo, _hi = p["cloze"]["words"] if kind == "cloze" else p["reading"]["words"]
+    # Word count per reply swings between ~45 and ~65 for this model, so a fixed
+    # paragraph count lands either 40 words short or 50 over. Instead: keep adding
+    # paragraphs until the shelf minimum is met (after at least 3), which puts the
+    # total inside the shelf's range without over-writing.
+    cap = 6 if kind == "cloze" else 8
     words = [w["word"].strip() for w in bank]
-    groups = [[] for _ in range(total)]
+    groups = [[] for _ in range(cap)]
     for i, w in enumerate(words):
-        groups[i % total].append(w)
+        groups[i % cap].append(w)
 
     parts = []
-    for i in range(total):
+    for i in range(cap):
+        if i >= 3 and len(" ".join(parts).split()) >= lo:
+            break
         prev = " ".join(parts)[-600:]
         prompt = (
-            f"You are writing paragraph {i + 1} of {total} of ONE continuous English "
-            f"passage for a learner preparing for {p['exam_en']}. Length: 60-80 words. "
+            f"You are writing paragraph {i + 1} of ONE continuous English "
+            f"passage for a learner preparing for {p['exam_en']}. Length: 70-85 words. "
         )
         if parts:
             prompt += (f'The passage so far ends with: "...{prev}" Continue the same '
@@ -491,6 +498,157 @@ def _reading_card(bank, book):
             "questions": questions}
 
 
+_STOPWORDS = {
+    "the", "and", "but", "for", "with", "that", "this", "these", "those",
+    "from", "into", "than", "then", "them", "they", "their", "there", "here",
+    "when", "while", "which", "whose", "what", "where", "why", "how",
+    "have", "has", "had", "was", "were", "are", "is", "been", "being",
+    "will", "would", "can", "could", "may", "might", "must", "should",
+    "not", "you", "your", "our", "his", "her", "its", "she", "him",
+    "also", "very", "more", "most", "some", "any", "all", "both", "each",
+    "every", "other", "others", "such", "just", "only", "even", "still",
+    "about", "after", "before", "during", "without", "between", "because",
+    "however", "therefore", "many", "much", "well", "make", "makes", "made",
+}
+
+
+def _cloze_candidates(passage, gap=4):
+    """Words in the passage a cloze blank could sit on, spaced >= `gap` tokens.
+
+    The model used to name the words itself and kept naming lemmas that were not
+    in the text ("compare" for "comparing"), so every card failed placement and
+    fell back to the short single-shot path. Here Python enumerates the legal
+    positions; the model only picks numbers, so a pick cannot point outside the
+    passage and two blanks can never end up side by side.
+    """
+    tokens = [(m.start(), m.end(), m.group(0))
+              for m in re.finditer(r"[A-Za-z][A-Za-z'-]*", passage)]
+    cands, last = [], -10 ** 9
+    for i, (_s, _e, tok) in enumerate(tokens):
+        low = tok.lower().strip("'-")
+        if "'" in tok:
+            continue  # contractions ("It's", "don't") make for ugly, unbalanced blanks
+        if len(low) < 4 or low in _STOPWORDS:
+            continue
+        if i - last < gap:
+            continue
+        cands.append((i, tok))
+        last = i
+    return tokens, cands
+
+
+def _cloze_picks_valid(data, n_cands):
+    picks = data.get("picks")
+    if not isinstance(picks, list) or len(picks) != 10:
+        return False
+    nums = []
+    for it in picks:
+        if not isinstance(it, dict):
+            return False
+        try:
+            n = int(it.get("n"))
+        except (TypeError, ValueError):
+            return False
+        if not 1 <= n <= n_cands:
+            return False
+        if not str(it.get("explanation", "")).strip():
+            return False
+        nums.append(n)
+    return len(set(nums)) == 10
+
+
+def _cloze_picks(passage, cands, book):
+    """Ask the model ONLY which numbered words to blank — never to rewrite text."""
+    p = profile_for(book)
+    listing = "\n".join(f"{n}) {word}" for n, (_idx, word) in enumerate(cands, 1))
+    prompt = (
+        f"You are an experienced {p['exam_en']} teacher writing a cloze test. "
+        "Below is a passage and a numbered list of its words. Choose exactly 10 "
+        "of those numbers to blank out.\n"
+        'Return ONLY JSON: {"picks":[{"n":<number from the list>,'
+        '"explanation":"中文解析：为什么填这个词（一句话）"}, ...]}\n'
+        "Rules:\n"
+        "1. Exactly 10 picks, all different numbers, all taken from the list.\n"
+        "2. Spread them across the whole passage — roughly one blank every "
+        "15-25 words. Do not cluster them in the first half.\n"
+        "3. Pick words a learner must infer from context (verbs, nouns, "
+        "adjectives, adverbs); skip proper nouns and words the sentence makes "
+        "obvious.\n"
+        "4. Each explanation is one short Chinese sentence saying why that word "
+        f"fits; do not use option letters. Difficulty: {p['level']}\n\n"
+        "Numbered words:\n" + listing + "\n\nPassage:\n" + passage
+    )
+    data, _prov = generate_json(
+        prompt, validator=lambda d: _cloze_picks_valid(d, len(cands)),
+        max_tokens=800, timeout=60)
+    return data["picks"]
+
+
+def _mark_blanks(passage, tokens, chosen):
+    """Insert __n__ at chosen token indices. `chosen` is [(token_idx, explanation)].
+
+    Positions come from Python, so the text can never drift: every blank is a real
+    word of the passage and no two blanks are adjacent.
+    """
+    if len(chosen) != 10:
+        return None
+    picked = sorted(chosen, key=lambda c: c[0])
+    idxs = [c[0] for c in picked]
+    if len(set(idxs)) != 10:
+        return None
+    if any(b - a <= 1 for a, b in zip(idxs, idxs[1:])):
+        return None
+
+    chunks, prev = [], 0
+    for no, idx in enumerate(idxs, 1):
+        start, end, _tok = tokens[idx]
+        chunks.append(passage[prev:start])
+        chunks.append(f"__{no}__")
+        prev = end
+    chunks.append(passage[prev:])
+    marked = "".join(chunks)
+
+    answers = [tokens[i][2] for i in idxs]
+    order = list(range(10))
+    random.shuffle(order)  # otherwise blank 1 is always option A
+    keys = "ABCDEFGHIJ"
+    options = {keys[pos]: answers[order[pos]] for pos in range(10)}
+    key_pos = {answer_pos: pos for pos, answer_pos in enumerate(order)}
+    blanks = [
+        {"no": no, "answer": keys[key_pos[no - 1]],
+         "explanation": str(picked[no - 1][1]).strip()[:300]}
+        for no in range(1, 11)
+    ]
+    return marked, options, blanks
+
+
+def _cloze_card(bank, book):
+    """Two-step cloze card: paged passage, then 10 blanks inside THAT text."""
+    try:
+        passage = _paged_passage(bank, book, kind="cloze")
+    except (GenerationFailed, NoProvider):
+        return None
+    lo = profile_for(book)["cloze"]["words"][0]
+    if not passage or len(passage.split()) < int(lo * 0.7):
+        return None
+    tokens, cands = _cloze_candidates(passage)
+    if len(cands) < 12:
+        return None
+    try:
+        picks = _cloze_picks(passage, cands, book)
+    except (GenerationFailed, NoProvider, ValueError, KeyError, TypeError):
+        return None
+    chosen = [(cands[int(it["n"]) - 1][0], it.get("explanation", "")) for it in picks]
+    built = _mark_blanks(passage, tokens, chosen)
+    if not built:
+        return None
+    marked, options, blanks = built
+    first = re.split(r"(?<=[.!?])\s+", marked.replace("__", " "))[0]
+    short = " ".join(first.split()[:7]).rstrip(",;:.") + "…"
+    return {"kind": "cloze", "title": short or "选词填空", "passage": marked,
+            "options": options, "blanks": blanks}
+
+
 def generate_practice_card(conn, user_id, kind, book_id=1, book=None):
     """Generate one structured, validated practice card. Read-only on progress."""
     if kind not in CARD_KINDS:
@@ -501,6 +659,11 @@ def generate_practice_card(conn, user_id, kind, book_id=1, book=None):
 
     if kind == "reading":
         card = _reading_card(bank, book)
+        if card:
+            card["provider"] = "paged:" + (book.get("code") if book else "default")
+            return card
+    if kind == "cloze":
+        card = _cloze_card(bank, book)
         if card:
             card["provider"] = "paged:" + (book.get("code") if book else "default")
             return card
