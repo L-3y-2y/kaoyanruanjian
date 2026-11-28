@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>整站 UI 框架 · 四版对比</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: #e6e7ec; color: #16181d;
+}
+.bar {
+  position: sticky; top: 0; z-index: 20; display: flex; gap: 8px; align-items: center;
+  padding: 10px 16px; background: #14151a; color: #e9eaf0; font-size: 13px; overflow-x: auto;
+}
+.bar b { color: #8c90a3; font-size: 12px; font-weight: 600; margin-right: 4px; white-space: nowrap; }
+.bar button {
+  flex: none; padding: 7px 14px; border-radius: 8px; border: 1px solid #2f313d; background: #1d1f27;
+  color: #c6cad8; font: inherit; cursor: pointer; white-space: nowrap;
+}
+.bar button.on { background: #f1f2f6; color: #14151a; border-color: #f1f2f6; font-weight: 600; }
+.bar .hint { margin-left: auto; color: #71768a; font-size: 12px; white-space: nowrap; }
+
+.stage { padding: 0 0 60px; }
+.view { display: none; }
+.view.on { display: block; }
+
+/* ============================================================ 1 侧边栏 */
+.v1 { display: flex; min-height: 100vh; background: #fbfbfd; }
+.v1 .side {
+  width: 218px; flex: none; background: #f3f4f8; border-right: 1px solid #e4e6ee;
+  padding: 16px 12px; display: flex; flex-direction: column; gap: 3px;
+}
+.v1 .mk { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; }
+.v1 .mk i {
+  width: 28px; height: 28px; border-radius: 8px; background: #3b5bdb; color: #fff;
+  display: grid; place-items: center; font-size: 14px; font-style: normal; font-weight: 700;
+}
+.v1 .mk span { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+.v1 .grp { font-size: 11px; color: #9aa0b0; padding: 14px 8px 6px; letter-spacing: .4px; }
+.v1 .nav {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px;
+  font-size: 13.5px; color: #4c5265; cursor: default;
+}
+.v1 .nav:hover { background: #e9ebf2; }
+.v1 .nav.on { background: #fff; color: #26314f; font-weight: 600; box-shadow: 0 1px 2px rgba(22,24,29,.07); }
+.v1 .nav em { margin-left: auto; font-style: normal; font-size: 11px; background: #dfe3f0; color: #4c5265; padding: 1px 6px; border-radius: 99px; }
+.v1 .nav .ic { width: 16px; height: 16px; border-radius: 4px; background: #c9cede; }
+.v1 .nav.on .ic { background: #3b5bdb; }
+.v1 .side .foot { margin-top: auto; font-size: 11.5px; color: #9aa0b0; padding: 12px 8px 0; border-top: 1px solid #e4e6ee; }
+.v1 .main { flex: 1; min-width: 0; }
+.v1 .top {
+  height: 56px; display: flex; align-items: center; gap: 14px; padding: 0 26px;
+  border-bottom: 1px solid #e9eaf1; background: #fff;
+}
+.v1 .crumb { font-size: 13px; color: #6b7185; }
+.v1 .crumb b { color: #16181d; font-weight: 600; }
+.v1 .top .r { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #6b7185; }
+.v1 .av { width: 26px; height: 26px; border-radius: 50%; background: #dfe3f0; display: grid; place-items: center; font-size: 11px; color: #4c5265; }
+.v1 .wrap { padding: 24px 26px; max-width: 1060px; }
+.v1 .cols { display: grid; grid-template-columns: minmax(0,1fr) 264px; gap: 20px; align-items: start; }
+.v1 h2 { margin: 0 0 4px; font-size: 21px; font-weight: 600; letter-spacing: -.2px; }
+.v1 .sub { margin: 0 0 20px; font-size: 12.5px; color: #8b91a3; }
+.v1 .card { background: #fff; border: 1px solid #e7e9f0; border-radius: 10px; padding: 22px; }
+.v1 .card.tight { padding: 16px; }
+.v1 .wordrow { display: flex; align-items: baseline; gap: 12px; }
+.v1 .word { font-size: 34px; font-weight: 600; letter-spacing: -.8px; }
+.v1 .ph { font-size: 13px; color: #8b91a3; }
+.v1 .pos { font-size: 11px; padding: 2px 6px; border: 1px solid #e0e3ee; border-radius: 5px; color: #6b7185; }
+.v1 .def { margin: 10px 0 26px; font-size: 15px; color: #333a4d; }
+.v1 .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.v1 .b {
+  padding: 9px 16px; border-radius: 7px; border: 1px solid #d9dce8; background: #fff;
+  font: inherit; font-size: 13.5px; color: #333a4d; cursor: default;
+}
+.v1 .b.pri { background: #3b5bdb; border-color: #3b5bdb; color: #fff; font-weight: 500; }
+.v1 .b.sm { padding: 6px 11px; font-size: 12.5px; }
+.v1 .rounds { display: flex; gap: 6px; margin: 0 0 18px; }
+.v1 .rounds i {
+  flex: 1; height: 3px; border-radius: 2px; background: #e4e6ee; font-style: normal;
+}
+.v1 .rounds i.done { background: #3b5bdb; }
+.v1 .rounds i.now { background: #9aabec; }
+.v1 .kv { display: flex; justify-content: space-between; font-size: 12.5px; padding: 9px 0; border-bottom: 1px solid #f0f1f6; color: #6b7185; }
+.v1 .kv:last-child { border: 0; }
+.v1 .kv b { color: #16181d; font-weight: 600; }
+.v1 .cap { font-size: 11.5px; color: #9aa0b0; margin: 0 0 10px; letter-spacing: .3px; }
+
+/* ============================================================ 2 顶栏单栏 */
+.v2 { background: #fff; min-height: 100vh; }
+.v2 .top { display: flex; align-items: center; gap: 16px; padding: 14px 28px; border-bottom: 1px solid #ebedf2; }
+.v2 .mk { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; }
+.v2 .mk i { width: 22px; height: 22px; border-radius: 6px; background: #111318; color: #fff; display: grid; place-items: center; font-size: 12px; font-style: normal; }
+.v2 .seg { display: flex; gap: 2px; padding: 3px; background: #f2f3f7; border-radius: 9px; margin: 0 auto; }
+.v2 .seg span { padding: 6px 14px; border-radius: 7px; font-size: 13px; color: #6c7284; cursor: default; }
+.v2 .seg span.on { background: #fff; color: #111318; font-weight: 600; box-shadow: 0 1px 3px rgba(17,19,24,.1); }
+.v2 .top .r { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: #6c7284; }
+.v2 .wrap { max-width: 760px; margin: 0 auto; padding: 40px 24px 80px; }
+.v2 .eyebrow { font-size: 11.5px; letter-spacing: 1.2px; text-transform: uppercase; color: #8d93a5; margin: 0 0 10px; }
+.v2 h2 { margin: 0 0 8px; font-size: 27px; font-weight: 600; letter-spacing: -.4px; }
+.v2 .sub { margin: 0 0 24px; font-size: 13.5px; color: #7d8397; line-height: 1.7; }
+.v2 .block { border-top: 1px solid #ebedf2; padding: 22px 0; }
+.v2 .block:first-of-type { border-top: 0; }
+.v2 .word { font-size: 40px; font-weight: 600; letter-spacing: -1.2px; }
+.v2 .ph { font-size: 13px; color: #8d93a5; margin-left: 10px; }
+.v2 .def { font-size: 16px; color: #2b3040; margin: 8px 0 24px; line-height: 1.6; }
+.v2 .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.v2 .b { padding: 10px 18px; border-radius: 8px; border: 1px solid #e3e5ec; background: #fff; font: inherit; font-size: 13.5px; color: #2b3040; cursor: default; }
+.v2 .b.pri { background: #111318; border-color: #111318; color: #fff; }
+.v2 .b.ghost { border-color: transparent; color: #6c7284; }
+.v2 .rounds { display: flex; gap: 8px; margin: 0 0 22px; }
+.v2 .rounds i { flex: 1; height: 5px; border-radius: 99px; background: #eef0f5; font-style: normal; }
+.v2 .rounds i.done { background: #111318; }
+.v2 .rounds i.now { background: #b9becd; }
+.v2 .statrow { display: flex; gap: 34px; }
+.v2 .statrow i { font-style: normal; display: block; font-size: 11.5px; color: #8d93a5; margin-bottom: 3px; }
+.v2 .statrow b { font-size: 19px; font-weight: 600; }
+.v2 .note { background: #f7f8fa; border-left: 2px solid #111318; padding: 12px 14px; font-size: 12.5px; color: #5a6072; line-height: 1.7; }
+
+/* ============================================================ 3 图标栏双栏 */
+.v3 { display: flex; min-height: 100vh; background: #f5f6f8; }
+.v3 .rail {
+  width: 62px; flex: none; background: #0f1216; display: flex; flex-direction: column;
+  align-items: center; gap: 6px; padding: 14px 0;
+}
+.v3 .rail i {
+  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+  font-style: normal; font-size: 11px; color: #7d8595; background: transparent;
+}
+.v3 .rail i.on { background: #1f2a24; color: #6ee7b7; }
+.v3 .rail i.mk { background: #6ee7b7; color: #0f1216; font-weight: 700; margin-bottom: 10px; }
+.v3 .body { flex: 1; min-width: 0; }
+.v3 .top { height: 62px; display: flex; align-items: center; gap: 16px; padding: 0 24px; background: #fff; border-bottom: 1px solid #e6e8ee; }
+.v3 h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.v3 .top .tag { font-size: 11.5px; padding: 3px 8px; border-radius: 6px; background: #ecfdf5; color: #067a55; border: 1px solid #cdeee1; }
+.v3 .top .r { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #6d7486; }
+.v3 .wrap { padding: 20px 24px; }
+.v3 .grid { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 16px; align-items: start; }
+.v3 .pane { background: #fff; border: 1px solid #e6e8ee; border-radius: 12px; padding: 20px; }
+.v3 .pane.sticky { position: sticky; top: 82px; }
+.v3 .hd { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 12px; color: #8b91a2; letter-spacing: .3px; }
+.v3 .hd b { color: #16181d; font-size: 13px; font-weight: 600; }
+.v3 .word { font-size: 38px; font-weight: 600; letter-spacing: -1px; }
+.v3 .meta { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #8b91a2; margin: 6px 0 14px; }
+.v3 .def { font-size: 15.5px; color: #2c3242; line-height: 1.7; margin: 0 0 22px; }
+.v3 .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.v3 .b { padding: 9px 16px; border-radius: 8px; border: 1px solid #dfe2ea; background: #fff; font: inherit; font-size: 13px; color: #2c3242; cursor: default; }
+.v3 .b.pri { background: #067a55; border-color: #067a55; color: #fff; }
+.v3 .b.warn { border-color: #f0d9b5; background: #fffaf0; color: #9a6410; }
+.v3 .rounds { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.v3 .rounds div {
+  border: 1px solid #e6e8ee; border-radius: 8px; padding: 8px 6px; text-align: center;
+  font-size: 11px; color: #8b91a2;
+}
+.v3 .rounds div b { display: block; font-size: 13px; color: #16181d; margin-bottom: 2px; font-weight: 600; }
+.v3 .rounds div.done { background: #f0fdf7; border-color: #cdeee1; }
+.v3 .rounds div.done b { color: #067a55; }
+.v3 .rounds div.now { border-color: #6ee7b7; background: #fff; box-shadow: 0 0 0 3px rgba(110,231,183,.18); }
+.v3 .kv { display: flex; justify-content: space-between; font-size: 12.5px; color: #6d7486; padding: 8px 0; }
+.v3 .kv b { color: #16181d; font-weight: 600; }
+.v3 .hintbox { margin-top: 14px; padding: 10px 12px; background: #f6f8fa; border-radius: 8px; font-size: 12px; color: #6d7486; line-height: 1.65; }
+
+/* ============================================================ 4 移动优先 */
+.v4 { background: #eef0f5; min-height: 100vh; padding: 18px 0 0; }
+.v4 .phone { max-width: 460px; margin: 0 auto; background: #f6f7fa; border-radius: 26px; overflow: hidden; border: 1px solid #e2e5ed; box-shadow: 0 20px 50px -24px rgba(20,24,35,.35); }
+.v4 .top { padding: 18px 20px 10px; display: flex; align-items: flex-start; gap: 12px; }
+.v4 .top h2 { margin: 0; font-size: 23px; font-weight: 700; letter-spacing: -.5px; }
+.v4 .top p { margin: 4px 0 0; font-size: 12px; color: #8b91a2; }
+.v4 .top .av { margin-left: auto; width: 32px; height: 32px; border-radius: 50%; background: #ffe3d9; display: grid; place-items: center; font-size: 12px; color: #d1481f; font-weight: 600; }
+.v4 .scroll { padding: 4px 16px 88px; }
+.v4 .ring { display: flex; align-items: center; gap: 14px; background: #fff; border-radius: 18px; padding: 16px 18px; margin-bottom: 14px; }
+.v4 .ring .dial { width: 54px; height: 54px; border-radius: 50%; background: conic-gradient(#ff6b4a 0 30%, #f0f1f6 30% 100%); display: grid; place-items: center; flex: none; }
+.v4 .ring .dial i { width: 42px; height: 42px; border-radius: 50%; background: #fff; display: grid; place-items: center; font-style: normal; font-size: 12px; font-weight: 700; }
+.v4 .ring b { display: block; font-size: 14px; margin-bottom: 3px; }
+.v4 .ring span { font-size: 12px; color: #8b91a2; }
+.v4 .card { background: #fff; border-radius: 20px; padding: 20px; margin-bottom: 14px; }
+.v4 .card .cap { display: flex; align-items: center; font-size: 11.5px; color: #9aa0b0; margin-bottom: 12px; }
+.v4 .card .cap em { margin-left: auto; font-style: normal; background: #fff1ec; color: #d1481f; padding: 2px 8px; border-radius: 99px; font-size: 11px; }
+.v4 .word { font-size: 31px; font-weight: 700; letter-spacing: -.8px; }
+.v4 .ph { font-size: 12.5px; color: #8b91a2; margin-top: 2px; }
+.v4 .def { font-size: 14.5px; color: #2c3242; line-height: 1.65; margin: 12px 0 18px; }
+.v4 .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.v4 .b { padding: 12px; border-radius: 12px; border: 1px solid #e5e7ef; background: #fff; font: inherit; font-size: 13.5px; cursor: default; }
+.v4 .b.pri { background: #ff6b4a; border-color: #ff6b4a; color: #fff; font-weight: 600; }
+.v4 .b.wide { grid-column: span 2; }
+.v4 .dots { display: flex; gap: 6px; margin-bottom: 16px; }
+.v4 .dots i { flex: 1; height: 4px; border-radius: 99px; background: #eff1f6; font-style: normal; }
+.v4 .dots i.done { background: #ff6b4a; }
+.v4 .dots i.now { background: #ffb8a6; }
+.v4 .bignum { display: flex; gap: 10px; }
+.v4 .bignum div { flex: 1; background: #f6f7fa; border-radius: 14px; padding: 12px; text-align: center; }
+.v4 .bignum i { font-style: normal; display: block; font-size: 11px; color: #9aa0b0; margin-bottom: 4px; }
+.v4 .bignum b { font-size: 18px; font-weight: 700; }
+.v4 .tabbar {
+  position: sticky; bottom: 0; display: flex; background: rgba(255,255,255,.94);
+  border-top: 1px solid #e8eaf1; padding: 8px 6px 10px; backdrop-filter: blur(8px);
+  margin: 0 -0px; max-width: 460px; margin: 0 auto; margin-top: -74px;
+}
+.v4 .tabbar div { flex: 1; text-align: center; font-size: 10.5px; color: #9aa0b0; }
+.v4 .tabbar div i { display: block; width: 20px; height: 20px; margin: 0 auto 3px; border-radius: 6px; background: #dfe2ec; }
+.v4 .tabbar div.on { color: #ff6b4a; font-weight: 600; }
+.v4 .tabbar div.on i { background: #ff6b4a; }
+
+/* ---------- 组件层 ---------- */
+.spec { margin: 26px auto 0; max-width: 1060px; padding: 0 24px; }
+.spec h4 { margin: 0 0 12px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: #6b7185; font-weight: 600; }
+.spec .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.spec .box { background: #fff; border: 1px solid #e6e8ee; border-radius: 10px; padding: 14px; flex: 1; min-width: 210px; }
+.spec .box p { margin: 0 0 10px; font-size: 11.5px; color: #8b91a2; }
+.spec input { width: 100%; padding: 9px 12px; border: 1px solid #e0e3ec; border-radius: 8px; font: inherit; font-size: 13px; }
+.spec .chip { font-size: 12px; padding: 3px 9px; border-radius: 99px; background: #eef0f6; color: #4c5265; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>框架</b>
+  <button data-v="1" class="on">1 · 侧边栏应用</button>
+  <button data-v="2">2 · 顶栏单栏</button>
+  <button data-v="3">3 · 图标栏 + 双栏</button>
+  <button data-v="4">4 · 移动优先卡片流</button>
+  <span class="hint">同一屏「今日学习」· 四种骨架</span>
+</div>
+
+<div class="stage">
+
+<!-- ======================================================= 1 -->
+<section class="view on" data-view="1">
+  <div class="v1">
+    <aside class="side">
+      <div class="mk"><i>研</i><span>考研词汇</span></div>
+      <div class="grp">学习</div>
+      <div class="nav on"><span class="ic"></span>今日学习</div>
+      <div class="nav"><span class="ic"></span>复习板块<em>17</em></div>
+      <div class="nav"><span class="ic"></span>每日短文</div>
+      <div class="nav"><span class="ic"></span>周阅读</div>
+      <div class="grp">工具</div>
+      <div class="nav"><span class="ic"></span>英语 AI</div>
+      <div class="nav"><span class="ic"></span>词库管理</div>
+      <div class="foot">考研英语 · 7395 词<br>本机模式</div>
+    </aside>
+    <div class="main">
+      <div class="top">
+        <div class="crumb">学习 / <b>今日学习</b></div>
+        <div class="r"><span>R2 · 认识</span><span>未掌握池 128/300</span><div class="av">陈</div></div>
+      </div>
+      <div class="wrap">
+        <div class="cols">
+          <div>
+            <h2>今日学习</h2>
+            <p class="sub">第 3 天 · 今日 40 词 · 已完成 12</p>
+            <div class="rounds"><i class="done"></i><i class="now"></i><i></i><i></i><i></i></div>
+            <div class="card">
+              <div class="cap">R1 · 认识 · 第 13 / 40</div>
+              <div class="wordrow"><span class="word">meticulous</span><span class="ph">/məˈtɪkjələs/</span><span class="pos">adj.</span></div>
+              <p class="def">极为细致的，一丝不苟的</p>
+              <div class="btns">
+                <button class="b pri">认识</button>
+                <button class="b">模糊</button>
+                <button class="b">不认识</button>
+                <button class="b sm">播放读音</button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="card tight">
+              <div class="cap">五轮进度</div>
+              <div class="kv"><span>R1 认识</span><b>12 / 40</b></div>
+              <div class="kv"><span>R2 听写</span><b>进行中</b></div>
+              <div class="kv"><span>R3 默写</span><b>—</b></div>
+              <div class="kv"><span>R4 汉译英</span><b>—</b></div>
+              <div class="kv"><span>R5 英译汉</span><b>—</b></div>
+            </div>
+            <div class="card tight" style="margin-top:14px">
+              <div class="cap">今日统计</div>
+              <div class="kv"><span>正确率</span><b>86%</b></div>
+              <div class="kv"><span>学习时长</span><b>34 分钟</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================= 2 -->
+<section class="view" data-view="2">
+  <div class="v2">
+    <div class="top">
+      <div class="mk"><i>研</i>考研词汇</div>
+      <div class="seg">
+        <span class="on">今日学习</span><span>复习 17</span><span>短文</span><span>周阅读</span><span>AI</span>
+      </div>
+      <div class="r"><span>考研英语</span><span>陈</span></div>
+    </div>
+    <div class="wrap">
+      <p class="eyebrow">Day 03 · 40 words</p>
+      <h2>今日学习</h2>
+      <p class="sub">五轮走完才算今天学完：认识 → 听写 → 默写 → 汉译英 → 英译汉。完成后进入复习池。</p>
+
+      <div class="block">
+        <div class="rounds"><i class="done"></i><i class="now"></i><i></i><i></i><i></i></div>
+        <span class="word">meticulous</span><span class="ph">/məˈtɪkjələs/ · adj.</span>
+        <p class="def">极为细致的，一丝不苟的</p>
+        <div class="btns">
+          <button class="b pri">认识</button>
+          <button class="b">模糊</button>
+          <button class="b">不认识</button>
+          <button class="b ghost">播放读音</button>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="statrow">
+          <div><i>今日进度</i><b>12 / 40</b></div>
+          <div><i>正确率</i><b>86%</b></div>
+          <div><i>时长</i><b>34 分</b></div>
+          <div><i>待复习</i><b>17</b></div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="note">下一轮是「听写」：只放发音，写出单词。拼错会回到认识轮重来。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================= 3 -->
+<section class="view" data-view="3">
+  <div class="v3">
+    <div class="rail">
+      <i class="mk">研</i>
+      <i class="on">学</i>
+      <i>复</i>
+      <i>文</i>
+      <i>读</i>
+      <i>AI</i>
+    </div>
+    <div class="body">
+      <div class="top">
+        <h2>今日学习</h2>
+        <span class="tag">第 3 天</span>
+        <div class="r"><span>考研英语</span><span>34 分钟</span></div>
+      </div>
+      <div class="wrap">
+        <div class="grid">
+          <div class="pane">
+            <div class="hd"><b>当前单词</b>· R1 认识 · 13 / 40</div>
+            <div class="word">meticulous</div>
+            <div class="meta"><span>/məˈtɪkjələs/</span><span>adj.</span><span>考研高频</span></div>
+            <p class="def">极为细致的，一丝不苟的</p>
+            <div class="btns">
+              <button class="b pri">认识</button>
+              <button class="b warn">模糊</button>
+              <button class="b">不认识</button>
+              <button class="b">播放读音</button>
+            </div>
+          </div>
+          <div class="pane sticky">
+            <div class="hd"><b>五轮</b>· 今日 40 词</div>
+            <div class="rounds">
+              <div class="done"><b>R1</b>12/40</div>
+              <div class="now"><b>R2</b>进行中</div>
+              <div><b>R3</b>—</div>
+              <div><b>R4</b>—</div>
+              <div><b>R5</b>—</div>
+            </div>
+            <div style="margin-top:14px">
+              <div class="kv"><span>正确率</span><b>86%</b></div>
+              <div class="kv"><span>未掌握池</span><b>128 / 300</b></div>
+              <div class="kv"><span>连续天数</span><b>3</b></div>
+            </div>
+            <div class="hintbox">下一轮「听写」只放发音，写错会退回认识轮。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================= 4 -->
+<section class="view" data-view="4">
+  <div class="v4">
+    <div class="phone">
+      <div class="top">
+        <div><h2>今日学习</h2><p>第 3 天 · 40 词 · 已学 12</p></div>
+        <div class="av">陈</div>
+      </div>
+      <div class="scroll">
+        <div class="ring">
+          <div class="dial"><i>30%</i></div>
+          <div><b>今天还有 28 个词</b><span>预计 18 分钟 · 五轮已完成 1 轮</span></div>
+        </div>
+        <div class="card">
+          <div class="cap">R1 认识 · 13 / 40<em>在第 13 个</em></div>
+          <div class="word">meticulous</div>
+          <div class="ph">/məˈtɪkjələs/ · adj.</div>
+          <p class="def">极为细致的，一丝不苟的</p>
+          <div class="btns">
+            <button class="b pri">认识</button>
+            <button class="b">不认识</button>
+            <button class="b wide">模糊 · 再出现一次</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cap">五轮</div>
+          <div class="dots"><i class="done"></i><i class="now"></i><i></i><i></i><i></i></div>
+          <div class="bignum">
+            <div><i>正确率</i><b>86%</b></div>
+            <div><i>待复习</i><b>17</b></div>
+            <div><i>时长</i><b>34′</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="on"><i></i>学习</div>
+        <div><i></i>复习</div>
+        <div><i></i>短文</div>
+        <div><i></i>阅读</div>
+        <div><i></i>AI</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<script>
+const bs = [...document.querySelectorAll('.bar button')]
+const vs = [...document.querySelectorAll('.view')]
+bs.forEach(b => b.addEventListener('click', () => {
+  bs.forEach(x => x.classList.toggle('on', x === b))
+  vs.forEach(v => v.classList.toggle('on', v.dataset.view === b.dataset.v))
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}))
+</script>
+</body>
+</html>

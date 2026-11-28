@@ -173,6 +173,11 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
         <input type="range" class="range" min="1" :max="maxN" v-model.number="countN" />
         <div class="range-ends"><span>1</span><span>{{ maxN }}</span></div>
       </div>
+      <div class="pool-line" v-if="pool">
+        <span>未掌握 <strong>{{ pool.available }}</strong></span>
+        <span>词库合计 <strong>{{ pool.total }}</strong></span>
+        <span>今日已背 <strong>{{ store.todayLearned }}</strong></span>
+      </div>
       <div class="actions">
         <button class="primary" :disabled="busy || !pool?.available" @click="createPlan">开始今天的学习</button>
       </div>
@@ -191,13 +196,16 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
     </section>
 
     <section v-else-if="state?.kind?.startsWith('r')" class="card quiz">
-      <div class="quiz-head">
-        <span class="round">{{ currentRound }}</span>
-        <span class="muted">第 {{ state.cycle_no }} / {{ state.cycle_count }} 组（本组 {{ state.cycle_size }} 词）</span>
+      <div class="quiz-top">
+        <div class="ring" :style="{ '--pct': progressPct + '%' }"><i>{{ progressPct }}%</i></div>
+        <div class="quiz-meta">
+          <span class="round">{{ currentRound }}</span>
+          <p class="muted small">
+            第 {{ state.cycle_no }}/{{ state.cycle_count }} 组 · {{ state.word_done }}/{{ state.word_total }} 词
+          </p>
+        </div>
         <button class="known-btn" :disabled="busy" @click="confirmKnown = true">熟知 · 跳过</button>
       </div>
-      <div class="bar"><div :style="{ width: progressPct + '%' }"></div></div>
-      <p class="muted small">已完成 {{ state.word_done }} / {{ state.word_total }} 词</p>
 
       <div v-if="correctFlash" class="correct-flash">✓ 默写正确，做得好！</div>
 
@@ -278,6 +286,12 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
 </template>
 
 <style scoped>
+.pool-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 16px; padding: 12px 14px; border-radius: 14px;
+  background: var(--surface); font-size: 12.5px; color: var(--muted);
+}
+.pool-line strong { display: block; font-size: 16px; font-weight: 700; color: var(--ink); margin-top: 2px; }
 .range-box { margin-top: 20px; }
 .range-value { text-align: center; font-size: 15px; color: var(--muted); }
 .range-value strong { font-size: 44px; font-weight: 800; color: var(--ink); margin-right: 6px; }
@@ -303,7 +317,7 @@ onBeforeUnmount(() => { if (flashTimer) clearTimeout(flashTimer) })
   border-radius: 50%;
   background: var(--primary-grad);
   border: 2px solid #fff;
-  box-shadow: 0 2px 8px rgba(79, 94, 240, .35);
+  box-shadow: 0 2px 8px rgba(255, 107, 74, .35);
   cursor: grab;
 }
 .range::-moz-range-thumb {

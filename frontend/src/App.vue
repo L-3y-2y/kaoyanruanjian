@@ -4,7 +4,8 @@ import { store, initTheme, loadMe, refreshHeader, loadModelInfo, loadTodayStats,
 import { startStudyTimer } from './studyTimer.js'
 import AuthPanel from './components/AuthPanel.vue'
 import TopBar from './components/TopBar.vue'
-import NavTabs from './components/NavTabs.vue'
+import TabBar from './components/TabBar.vue'
+import MoreSheet from './components/MoreSheet.vue'
 import LearnView from './components/LearnView.vue'
 import ReviewView from './components/ReviewView.vue'
 import ArticlesView from './components/ArticlesView.vue'
@@ -31,16 +32,15 @@ onMounted(async () => {
 
     <ModelPanel v-if="store.showModel" :info="store.modelInfo" @close="closeModel" @changed="onModelChanged" />
     <ChatPanel v-if="store.chatOpen" :context="store.chatContext" @close="closeChat" />
+    <MoreSheet v-if="store.moreOpen" />
 
     <template v-if="store.me && !store.showAuth">
       <TopBar />
 
       <div class="notice" v-if="store.me.local">
-        当前是<strong>本机模式</strong>：进度存在本机账号里。点「切换账号」注册，已有进度会自动归到你名下；注册后各账号数据互相隔离。「词库管理」在这里直接可用，无需管理员账号。
+        当前是<strong>本机模式</strong>，进度存在这台机器上；点「我的 → 切换账号」注册，进度会自动归到你名下。
       </div>
       <p class="error" v-if="store.error">{{ store.error }}</p>
-
-      <NavTabs />
 
       <LearnView v-if="store.activeTab === 'learn'" :key="'learn-' + store.currentBook?.id" />
       <ReviewView v-else-if="store.activeTab === 'review'" :key="'review-' + store.currentBook?.id" />
@@ -53,6 +53,8 @@ onMounted(async () => {
         进度、短文快照与答卷只存在服务端 MySQL 的 {{ store.health?.database || 'kaoyanruanjian' }} 库里；
         刷新、换设备都会接着上次继续。短文与周阅读不计入五轮，也不改动两级状态。
       </footer>
+
+      <TabBar />
     </template>
   </div>
 </template>

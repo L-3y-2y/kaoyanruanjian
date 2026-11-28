@@ -19,6 +19,7 @@ export const store = reactive({
   chatContext: null,        // null=通用答疑；{source_type, source_id, title}=带上下文
   showAuth: false,
   showModel: false,
+  moreOpen: false,          // 底部「我的」面板
   error: '',
 })
 
@@ -114,6 +115,15 @@ export function closeChat() {
 
 export function openModel() {
   store.showModel = true
+  store.moreOpen = false
+}
+
+export function openMore() {
+  store.moreOpen = true
+}
+
+export function closeMore() {
+  store.moreOpen = false
 }
 
 export function closeModel() {
