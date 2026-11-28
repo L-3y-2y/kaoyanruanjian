@@ -251,11 +251,10 @@
 
 | 接口 | 入参 | 返回 / 行为 |
 | --- | --- | --- |
-| `GET /api/articles/cloze?article_id=` | 文章 id | `{items:[{id, sentence, translation, pos, source, status, attempts}], done, total, complete}`；`source='article'` 为原文句、`'extra'` 为今日未收录词的补充例句；`sentence` 已挖空，答案只存服务端 |
-| `POST /api/articles/cloze/check` | `{item_id, value}` | `{correct, answer, done, total, weak}`；答错写 `answer_log` 并把该词 `progress.cloze_wrong=1`（次日复习队列优先），答对不写 progress |
-| `GET /api/scenario/example?word_id=` | 词 id | `{seq, sentence, translation, source}`：例句源，仅生成/缓存，不判分 |
+| `GET /api/articles/cloze?article_id=` | 文章 id | `{items:[{id, sentence, status, attempts}], done, total, complete}`；`sentence` 已挖空且**不含任何提示**（无中文翻译、无词性、不显示来源）；答案只存服务端 |
+| `POST /api/articles/cloze/check` | `{item_id, value}` | `{correct, answer, done, total, weak}`；接受原形或句中实际词形（absorbed / studies 等）；答错写 `answer_log` 并把该词 `progress.cloze_wrong=1`（次日复习队列优先），答对不写 progress |
 
-五轮走完即 `stage='memorized'` 进复习池、解锁短文。语境填空挂在每篇短文下方，首次揭示时按 `(article, word, source)` 幂等生成：`article` 类直接从正文取含目标词的句子挖空，`extra` 类用今日学过但文章未收录的词按 `(word, book)` 懒生成例句。全部练习只写 `answer_log`，**不写 progress 的五轮状态**；唯一例外是答错时置 `cloze_wrong` 标记，让次日复习优先安排该词（复习三轮通过后清零）。旧的 `/api/learn/cloze*` 关卡接口已移除。
+五轮走完即 `stage='memorized'` 进复习池、解锁短文。语境填空挂在每篇短文下方，首次揭示时按 `(article, word, source)` 幂等生成：**无论 `article` 还是 `extra`，句子都是按当前书考试级别现写的新句**——不取原文句，并与 `word_example` 里该词的历史句子、本轮其他句子做相似度去重。生成走并行（最多 5 路），读写分成两端短事务，LLM 调用期间不持有数据库事务。全部练习只写 `answer_log`，**不写 progress 的五轮状态**；唯一例外是答错时置 `cloze_wrong` 标记，让次日复习优先安排该词（复习三轮通过后清零）。旧的 `/api/learn/cloze*` 与 `/api/scenario/example` 接口已移除。
 
 ## 阶段 4：管理员词库（v2 已实现）
 

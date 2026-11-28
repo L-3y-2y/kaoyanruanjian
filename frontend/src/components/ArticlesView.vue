@@ -79,13 +79,16 @@ function hide(article) {
 const clozeAnswers = ref({})
 const clozeFeedback = ref({})
 const clozeBusy = ref(false)
+const clozeLoading = ref(false)
 
-// 语境填空：题目与答案都在服务端，浏览器只拿到挖空后的句子。
+// 语境填空：句子全部现写，答案只在服务端，浏览器只拿到挖空后的句子。
 async function loadCloze(article) {
   if (!shown.value[article.id] || cloze.value[article.id]) return
+  clozeLoading.value = true
   try {
     cloze.value[article.id] = await api(`/api/articles/cloze?article_id=${article.id}`)
   } catch (e) { error.value = e.message }
+  finally { clozeLoading.value = false }
 }
 
 async function checkOne(article, item) {
@@ -190,25 +193,24 @@ onMounted(async () => {
           <span class="muted small">生成方式：{{ a.generator }}</span>
         </div>
 
-        <div v-if="shown[a.id] && cloze[a.id]" class="cloze">
+        <div v-if="shown[a.id] && (cloze[a.id] || clozeLoading)" class="cloze">
           <h3>语境填空 · 写出英文单词</h3>
-          <p class="muted small">句子来自本文，另加今日学过但短文未收录的词。必须想起来自己写，答错的词明天复习优先安排。</p>
-          <p v-if="!cloze[a.id].items.length" class="muted small">这篇短文暂无可练习的词。</p>
-          <div v-for="(q, qi) in cloze[a.id].items" :key="q.id" class="question">
+          <p class="muted small">每句都是新写的，不复用短文原句、不给任何提示；凭语境把词写出来。填错的词明天复习优先安排。</p>
+          <p v-if="clozeLoading" class="muted small">正在为这些词写新的例句…</p>
+          <p v-if="cloze[a.id] && !cloze[a.id].items.length" class="muted small">这篇短文暂无可练习的词。</p>
+          <div v-for="(q, qi) in (cloze[a.id]?.items || [])" :key="q.id" class="question">
             <p class="q-stem">{{ qi + 1 }}. {{ q.sentence }}</p>
-            <p class="muted small" v-if="q.translation">提示：{{ q.translation }}</p>
-            <span class="chip tiny" v-if="q.source === 'extra'">今日词 · 补充句</span>
             <div v-if="q.status === 'passed'" class="answer small">✓ 已填对</div>
             <div v-else class="answer-row">
               <input v-model="clozeAnswers[q.id]" :disabled="clozeBusy"
-                     placeholder="填入挖空的英文单词" @keyup.enter="checkOne(a, q)" />
+                     placeholder="写出这里缺的英文单词" @keyup.enter="checkOne(a, q)" />
               <button class="primary" :disabled="clozeBusy" @click="checkOne(a, q)">提交</button>
             </div>
             <p v-if="clozeFeedback[q.id] === 'ok'" class="ok-note">✓ 填对了，记得牢</p>
             <p v-if="clozeFeedback[q.id] === 'bad'" class="bad-note">✗ 再想想（大小写不敏感）</p>
             <p v-if="clozeFeedback[q.id] === 'weak'" class="bad-note">✗ 已标记薄弱，明天复习优先安排，继续重试</p>
           </div>
-          <div class="actions">
+          <div class="actions" v-if="cloze[a.id]">
             <span class="chip">已填对 {{ cloze[a.id].done }} / {{ cloze[a.id].total }}</span>
             <span v-if="cloze[a.id].complete" class="ok-note">语境巩固完成，去复习板块看看薄弱词吧。</span>
           </div>

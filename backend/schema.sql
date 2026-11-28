@@ -209,8 +209,8 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   INDEX `idx_session` (`session_id`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Micro-sentence source for the mandatory context cloze at the end of learning.
--- Generated lazily per word + book and cached; NEVER writes progress.
+-- Every sentence ever generated for a word, kept only so the next quiz can
+-- avoid repeating it. `seq` grows; never writes progress.
 CREATE TABLE IF NOT EXISTS `word_example` (
   `id`         INT AUTO_INCREMENT PRIMARY KEY,
   `word_id`    INT NOT NULL,
@@ -226,8 +226,9 @@ CREATE TABLE IF NOT EXISTS `word_example` (
 
 -- Article context quiz: fill-in-the-word questions generated from a daily
 -- article PLUS fresh sentences for today's words the article did not cover.
--- Answers stay server-side; wrong answers mark the word weak so the next-day
--- Ebbinghaus review prioritises it. Pure practice: no progress is written here.
+-- Article context quiz: sentences are freshly written for each quiz (never the
+-- article's own sentence) and masked before they leave the server. Wrong answers
+-- only set progress.cloze_wrong so the next-day review prioritises the word.
 CREATE TABLE IF NOT EXISTS `article_cloze` (
   `id`           INT AUTO_INCREMENT PRIMARY KEY,
   `user_id`      INT NOT NULL,

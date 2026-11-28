@@ -910,85 +910,43 @@ def mark_known(req: KnownIn, user=Depends(current_user)):
         return {"ok": True}
 
 
-# ---------------------------------------------------------------- example cloze in learn module
+# ---------------------------------------------------------------- article context quiz
 
-@app.get("/api/scenario/example")
-def scenario_example(word_id: int, user=Depends(current_user)):
-    with transaction() as conn:
-        book = book_row(conn, user["book_id"])
-        row = scenario_service.ensure_example(conn, word_id, book["id"], book)
-        if not row:
-            raise HTTPException(status_code=404, detail="找不到这个单词")
-        return row
-
-
-def _cloze_mask(sentence, answer):
-    """Blank the target word INCLUDING inflections — no answer leaks to the browser."""
-    if not answer:
-        return sentence or ""
-    pattern = re.compile(r"\b" + re.escape(answer) + r"\w*\b", re.IGNORECASE)
-    return pattern.sub(lambda m: "_" * len(m.group(0)), sentence or "")
-
-
-_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+def _past_sentences(conn, book_id, word_ids):
+    """Sentences already generated for these words: never show them twice."""
+    if not word_ids:
+        return {}
+    marks = ",".join(["%s"] * len(word_ids))
+    rows = query(
+        conn,
+        f"""SELECT word_id, sentence FROM `word_example`
+            WHERE book_id=%s AND word_id IN ({marks})
+            ORDER BY id DESC""",
+        (book_id, *word_ids),
+    )
+    out = {}
+    for r in rows:
+        out.setdefault(r["word_id"], []).append(r["sentence"])
+    return out
 
 
-def _sentence_with(body, surface):
-    """Pick the sentence in `body` that contains `surface` (word-boundary, inflections)."""
-    text = body or ""
-    pattern = re.compile(r"\b" + re.escape(surface or "") + r"\w*\b", re.IGNORECASE)
-    for sent in _SENT_SPLIT.split(text):
-        if pattern.search(sent):
-            return sent.strip()
-    return ""
-
-
-def _article_covered_ids(conn, article_id):
-    return {r["word_id"] for r in query(
-        conn, "SELECT DISTINCT word_id FROM `article_word` WHERE article_id=%s",
-        (article_id,))}
-
-
-def ensure_article_cloze(conn, user, book, art):
-    """Build fill-in items once per article: its target words + fresh sentences for
-    today's uncovered words. Answers are stored server-side only."""
-    existing = one(
-        conn, "SELECT COUNT(*) AS c FROM `article_cloze` WHERE article_id=%s",
-        (art["id"],))["c"]
-    if existing:
-        return
-    covered = _article_covered_ids(conn, art["id"])
-    # 1) words already inside the article — sentence taken verbatim from the body
+def _quiz_candidates(conn, user, book, art):
+    """Words to quiz on, plus the sentences each new sentence must differ from."""
     marked = query(
         conn,
         """SELECT m.word_id, m.surface, m.translation_snapshot AS translation,
-                  w.word AS answer, w.pos
+                  w.word, w.pos, w.translation AS base_translation
            FROM `article_word` m JOIN `word` w ON w.id=m.word_id
            WHERE m.article_id=%s ORDER BY m.position ASC LIMIT 5""",
         (art["id"],),
     )
-    for m in marked:
-        sentence = _sentence_with(art["body"], m["surface"])
-        if not sentence:
-            continue
-        masked = _cloze_mask(sentence, m["answer"])  # hides surface + inflections
-        if masked == sentence:  # nothing got blanked — skip, no leak
-            continue
-        execute(
-            conn,
-            """INSERT IGNORE INTO `article_cloze`
-               (user_id, book_id, article_id, word_id, sentence, translation,
-                answer, source)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,'article')""",
-            (user["id"], book["id"], art["id"], m["word_id"], masked,
-             m["translation"], m["answer"]),
-        )
-    # 2) today's words the article did NOT cover — a fresh sentence per word
+    extra = []
     plan_id = art.get("daily_plan_id")
     if plan_id:
-        today = query(
+        extra = query(
             conn,
-            """SELECT DISTINCT w.id, w.word, w.translation, w.pos
+            """SELECT DISTINCT w.id AS word_id, w.word, w.pos,
+                      w.translation AS base_translation
                FROM `progress` p JOIN `word` w ON w.id=p.word_id
                WHERE p.user_id=%s AND p.book_id=%s AND p.daily_plan_id=%s
                  AND p.round=5 AND w.id NOT IN (
@@ -996,27 +954,82 @@ def ensure_article_cloze(conn, user, book, art):
                ORDER BY w.id LIMIT 5""",
             (user["id"], book["id"], plan_id, art["id"]),
         )
-        for w in today:
-            ex = scenario_service.ensure_example(conn, w["id"], book["id"], book)
-            if not ex or not ex.get("sentence"):
-                continue
-            masked = _cloze_mask(ex["sentence"], w["word"])
-            if masked == ex["sentence"]:
-                continue
-            execute(
-                conn,
-                """INSERT IGNORE INTO `article_cloze`
-                   (user_id, book_id, article_id, word_id, sentence, translation,
-                    answer, source)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,'extra')""",
-                (user["id"], book["id"], art["id"], w["id"], masked,
-                 ex.get("translation"), w["word"]),
-            )
+    ids = [r["word_id"] for r in marked] + [r["word_id"] for r in extra]
+    past = _past_sentences(conn, book["id"], ids)
+
+    def cands(rows, kind):
+        out = []
+        for r in rows:
+            word = r["word"]
+            avoid = [scenario_service.mask_sentence(s, word)
+                     for s in past.get(r["word_id"], [])[:6]]
+            # Never reuse the sentence the user just read in the article.
+            in_article = scenario_service.sentence_with(
+                art["body"], r.get("surface") or word)
+            if in_article:
+                avoid.append(scenario_service.mask_sentence(in_article, word))
+            out.append({
+                "word_id": r["word_id"], "word": word, "pos": r.get("pos") or "",
+                "translation": (r.get("translation")
+                                or r.get("base_translation") or ""),
+                "kind": kind, "avoid": avoid,
+            })
+        return out
+
+    return cands(marked, "article") + cands(extra, "extra")
+
+
+def _save_quiz_items(conn, user, art, items):
+    """Persist masked sentences (answers stay server-side) and the used-sentence log."""
+    for it in items:
+        execute(
+            conn,
+            """INSERT IGNORE INTO `article_cloze`
+               (user_id, book_id, article_id, word_id, sentence, translation,
+                answer, source)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (user["id"], user["book_id"], art["id"], it["word_id"],
+             it["sentence"], it["translation"], it["answer"], it["source"]),
+        )
+        nxt = one(
+            conn,
+            """SELECT IFNULL(MAX(seq),0)+1 AS n FROM `word_example`
+               WHERE word_id=%s AND book_id=%s""",
+            (it["word_id"], user["book_id"]),
+        )["n"]
+        execute(
+            conn,
+            """INSERT IGNORE INTO `word_example`
+               (word_id, book_id, seq, sentence, translation, source)
+               VALUES (%s,%s,%s,%s,%s,'quiz')""",
+            (it["word_id"], user["book_id"], nxt, it["raw"], it["translation"]),
+        )
+
+
+def _quiz_payload(conn, user, article_id):
+    rows = query(
+        conn,
+        """SELECT id, sentence, status, attempts FROM `article_cloze`
+           WHERE article_id=%s AND user_id=%s AND book_id=%s
+           ORDER BY source='extra', id""",
+        (article_id, user["id"], user["book_id"]),
+    )
+    items = [{
+        "id": r["id"], "sentence": r["sentence"],
+        "status": r["status"], "attempts": int(r["attempts"] or 0),
+    } for r in rows]
+    passed = sum(1 for r in rows if r["status"] == "passed")
+    return {"items": items, "done": passed, "total": len(rows),
+            "complete": bool(rows) and passed == len(rows)}
 
 
 @app.get("/api/articles/cloze")
 def article_cloze(article_id: int, user=Depends(current_user)):
-    """Fill-in quiz for one article: answer words stay on the server."""
+    """Fill-in quiz: every sentence is freshly written, never the article's own.
+
+    Reading the plan and writing the rows happen in separate short transactions
+    so the (parallel) LLM calls never hold a database transaction open.
+    """
     with transaction() as conn:
         book = book_row(conn, user["book_id"])
         art = one(
@@ -1027,25 +1040,21 @@ def article_cloze(article_id: int, user=Depends(current_user)):
         )
         if not art:
             raise HTTPException(status_code=404, detail="找不到这篇短文")
-        ensure_article_cloze(conn, user, book, art)
-        rows = query(
+        ready = one(
             conn,
-            """SELECT c.id, c.sentence, c.translation, c.source, c.status,
-                      c.attempts, w.pos
-               FROM `article_cloze` c JOIN `word` w ON w.id=c.word_id
-               WHERE c.article_id=%s AND c.user_id=%s AND c.book_id=%s
-               ORDER BY c.source='extra', c.id""",
-            (art["id"], user["id"], book["id"]),
-        )
-        items = [{
-            "id": r["id"], "sentence": r["sentence"],
-            "translation": r["translation"], "pos": r["pos"],
-            "source": r["source"], "status": r["status"],
-            "attempts": int(r["attempts"] or 0),
-        } for r in rows]
-        passed = sum(1 for r in rows if r["status"] == "passed")
-        return {"items": items, "done": passed, "total": len(rows),
-                "complete": bool(rows) and passed == len(rows)}
+            """SELECT COUNT(*) AS c FROM `article_cloze`
+               WHERE article_id=%s AND user_id=%s""",
+            (art["id"], user["id"]),
+        )["c"]
+        candidates = [] if ready else _quiz_candidates(conn, user, book, art)
+
+    if candidates:
+        items = scenario_service.build_items(candidates, book)
+        with transaction() as conn:
+            _save_quiz_items(conn, user, art, items)
+
+    with transaction() as conn:
+        return _quiz_payload(conn, user, art["id"])
 
 
 @app.post("/api/articles/cloze/check")
@@ -1065,7 +1074,10 @@ def article_cloze_check(req: QuizCheckIn, user=Depends(current_user)):
         if row["status"] == "passed":
             return {"correct": True, "answer": row["answer"],
                     "done": None, "total": None, "weak": False}
-        correct = norm(req.value) == norm(row["answer"])
+        given = norm(req.value)
+        # Base form or the inflected form actually used in the sentence both count.
+        correct = bool(given) and given in set(
+            scenario_service.word_forms(row["answer"]))
         execute(conn,
                 """UPDATE `article_cloze`
                    SET attempts=attempts+1, status=IF(%s,'passed','pending')
