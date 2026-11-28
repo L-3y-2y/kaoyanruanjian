@@ -11,6 +11,8 @@ const feedback = ref(null)
 const loading = ref(false)
 const error = ref('')
 const showMeaning = ref(false)
+const showHint = ref(false)
+const imageFailed = ref(false)
 
 const current = computed(() => items.value[idx.value] || null)
 const modeLabel = computed(() => ({
@@ -60,6 +62,8 @@ function resetStep() {
   answer.value = ''
   feedback.value = null
   showMeaning.value = false
+  showHint.value = false
+  imageFailed.value = false
 }
 
 function check() {
@@ -123,9 +127,15 @@ onMounted(load)
     <section class="card" v-if="mode === 'scene' && current">
       <p class="muted small">第 {{ idx + 1 }} / {{ items.length }} 词 · 看图猜词</p>
       <div class="scene-image">
-        <img :src="current.scene?.image_url" :alt="current.scene?.scene_text" />
+        <img v-if="!imageFailed" :src="current.scene?.image_url" alt="情景图片"
+             @error="imageFailed = true" />
+        <p v-else class="muted small">图片暂时无法加载，可以看文字提示。</p>
       </div>
-      <p class="scene-desc">{{ current.scene?.scene_text }}</p>
+      <button class="ghost tiny" @click="showHint = !showHint">
+        {{ showHint ? '收起提示' : '看文字提示' }}
+      </button>
+      <p v-if="showHint" class="scene-desc">{{ current.scene?.hint_text || '先看图想想看。' }}</p>
+      <p v-if="feedback !== null" class="muted small">场景原文：{{ current.scene?.scene_text }}</p>
       <div class="choice-grid">
         <button v-for="c in choices" :key="c" :disabled="feedback !== null"
                 :class="{ right: feedback !== null && c === current.word,
